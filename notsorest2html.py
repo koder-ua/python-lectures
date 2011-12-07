@@ -1,3 +1,5 @@
+# -*- coding:utf8 -*-
+
 import os
 import re
 import sys
@@ -58,6 +60,7 @@ typed_block = re.compile("([-a-zA-Z_]+):$")
 typed_str = re.compile("[-a-zA-Z_]+:.*$")
 
 def classify_block(block):
+    block = block.lstrip()
     if u'\n' not in block:
         if typed_str.match(block):
             yield block.split(':', 1)
@@ -155,7 +158,7 @@ def highlight_c(code):
 #re_italic = re.compile(r"(?ims)'(.*?)'")
 re_bold = re.compile(r"(?ims)'(.*?)'")
 re_autor = re.compile("(?ims)^:Author:.*?$")
-re_href = re.compile(r"(https?://)(.*?)\s")
+re_href = re.compile(r"(https?://)(.*?)(\s|$)")
 
 class NotSoRESTHandler(object):
     def __init__(self):
@@ -228,15 +231,29 @@ class BlogspotHTMLProvider(NotSoRESTHandler):
         ntext = escape_html(text)
         ntext = re_bold.sub(ur"<b>\1</b>", ntext)
         return re_href.sub(self.process_href, ntext)
-
+    
+    def write_footer(self):
+        self.write(u'Исходники этого и других постов со скриптами лежат тут - ')
+        self.write(self.process_href(re_href.match("https://github.com/koder-ua/python-lectures")))
+        self.write(u'. При использовании их, пожалуйста, ссылайтесь на ')
+        self.write(self.process_href(re_href.match("http://koder-ua.blogspot.com/")))
+        self.write('.')
+ 
 
 def not_so_rest_to_html(text):
     formatter = BlogspotHTMLProvider()
 
-    for block_data in find_blocks(text.replace('\t', ' ' * 4)):
+    text = text.replace('\t', ' ' * 4)
+    
+    # skip header
+    text = text.split('\n', 3)[3]
+
+    for block_data in find_blocks(text):
         for block_type, btext in classify_block(block_data):
             formatter.process(block_type, btext)
     
+    formatter.write_footer()
+
     return formatter.get_result()
 
 def main():
