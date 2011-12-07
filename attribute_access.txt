@@ -1,0 +1,450 @@
+	Динамические атрибуты в python. Часть 1 - теория
+	=================================================
+ 
+	Disclamer: рассмотрены только 'новые' классы - все
+наследуемые от 'object'. В "старых" классах все работает немного
+по-другому. 
+	
+	Во всей статье классы именуются с заглавной буквы, а экземпляры
+классов со строчной. 'A' это класс экземпляра 'a'.
+
+	Вопрос о том, что происходит, когда python исполняет конструкцию
+'a.b' очень важен для понимания многих других тем. Особенно учитывая 
+что имитация атрибутов один из наиболее часто используемых приемов
+для библиотек в pythonic стиле.
+	Сначала посмотрим где принципиально может быть 'b', пока без
+правил очередности:
+
+	* 'a.__dict__["b"]' ; пока без '__slots__'
+	* 'a.__getattrib__("b")'
+	* 'a.__getattr__("b")''
+	* 'type(a).__dict__["b"]', вместо 'type(a)' может быть один 
+	   из базовых для 'type(a)' классов. Причем 'b' может быть как 
+	   просто атрибутом класса, там и 'property'. Как мы увидим 
+	   дальше это разные вещи.
+	* 'type(a).__dict__["b"](a)' - свойство
+
+	Все, кто не хотят идти весь путь самурая по коду и копаться в C могут смело 
+пролистать вниз ~300 сток экрана до Очень Важной Картинки.
+
+	Ничего луше кода не ответит на вопрос как все на самом деле, так что скачиваем
+последнюю версию и будем погружаться. Все начинается в cpython/Python/ceval.c со строки
+вида 'TARGET(LOAD_ATTR)' (у меня строка 2228). Мы находимся прямо в сердце интерпретатора 
+python, в цикле eval - здесь python по очереди исполняет инструкции байтокода.
+'dis.dis' говорит нам, что 'a.b' компилируется в две инструкции: 
+
+raw:
+	>>> import dis
+	>>> dis.dis(lambda : a.b )
+
+	1   0 LOAD_GLOBAL              0 (a)
+    	3 LOAD_ATTR                1 (b)
+        6 RETURN_VALUE
+
+	Так что инструкция 'LOAD_ATTR' это как раз то, что нам нужно. Тело 'TARGET(LOAD_ATTR)''
+содержит стандартную возню со стеком, подсчет ссылок и интересующий нас вызов:
+
+c:
+	x = PyObject_GetAttr(v, w); //Здесь 'v' - 'a', а 'w' -  'b'.
+
+c:
+	//Ф-ция PyObject_GetAttr находится в cpython/objects/object.c
+
+	PyObject *
+	PyObject_GetAttr(PyObject *v, PyObject *name)
+	{
+		// получаем тип v
+	    PyTypeObject *tp = Py_TYPE(v);
+
+	    // бла-бла-бла, проверка типов
+	    // получение аттрибута
+	    if (tp->tp_getattro != NULL)
+	        return (*tp->tp_getattro)(v, name);
+
+		// не важный код	    
+	}
+
+	Ок, следующие два участка кода, которые могут ответить на наш вопрос это структура 'object'
+и метод 'type.__new__'. Первый наследуют почти все классы, а второй может повлиять
+на структуру новых классов.
+
+c:
+	//cpython/Objects/typeobject.c:3260
+
+	PyTypeObject PyBaseObject_Type = {  // эта девушка! (с)
+		// bla-bla-bla
+	    "object",                                   /* tp_name */
+	    // bla-bla-bla
+	    
+	    // __getattribute__
+	    PyObject_GenericGetAttr,                    /* tp_getattro */
+		// .......	
+	}
+	
+
+	// PyObject_GenericGetAttr:
+	// cpython/objects/object.c
+
+	PyObject *
+	PyObject_GenericGetAttr(PyObject *obj, PyObject *name)
+	{
+	    return _PyObject_GenericGetAttrWithDict(obj, name, NULL);
+	}
+
+	// cpython/objects/object.c
+	// первый солидный кусок кода
+	PyObject *
+	_PyObject_GenericGetAttrWithDict(PyObject *obj, PyObject *name, PyObject *dict)
+	{
+	    PyTypeObject *tp = Py_TYPE(obj);
+
+	    .......
+	    
+	    if (!PyUnicode_Check(name)){
+	    	.... // исключение
+	    }
+	    else
+	        Py_INCREF(name);
+	    
+	    // ......
+
+	    // ищем name по mro
+	    descr = _PyType_Lookup(tp, name);
+	    
+	    .....
+
+	    if (descr != NULL) {
+
+	    	// если у descr есть __get__ - перед нами дескриптор    
+	        f = descr->ob_type->tp_descr_get;
+
+	        // если дескриптор данных
+	        if (f != NULL && PyDescr_IsData(descr)) {
+
+	            // получаем из него значение и выходим
+	            res = f(descr, obj, (PyObject *)obj->ob_type);
+	            Py_DECREF(descr);
+	            goto done;
+	        }
+	    }
+
+	    // dict это параметр для рекурсивного поиска
+	    // при вызове из tp_getattro он всегда NULL 
+	    if (dict == NULL) {
+	        /* Inline _PyObject_GetDictPtr */
+	        // тут получаем смещение __dict__ внутри объекта
+            // ну и сам __dict__ по нему
+            dictptr = (PyObject **) ((char *)obj + dictoffset);
+            dict = *dictptr;
+    	}
+
+    	// если dict нашелся
+	    if (dict != NULL) {
+	        Py_INCREF(dict);
+
+	        // получаем a.__dict__['b']
+	        // если 'b' not in a.__dict__, то PyDict_GetItem установит
+	        // исключение и вернет NULL
+	        // PyObject_GetAttr затем заменит это исключение(KeyError) на AttributeError
+	        res = PyDict_GetItem(dict, name);
+	        if (res != NULL) {
+	            ....
+	            goto done;
+	        }
+	        ....
+	    }
+
+	    // возвращаемся к дескриптору
+	    // если он хоть какой-нить
+	    // используем его
+	    if (f != NULL) {
+	        res = f(descr, obj, (PyObject *)Py_TYPE(obj));
+	        Py_DECREF(descr);
+	        goto done;
+	    }
+
+	    // если вообще нашли что-то в базовых классах
+	    if (descr != NULL) {
+	        res = descr;
+	        /* descr was already increfed above */
+	        goto done;
+	    }
+
+	    // иначе raise AttributeError
+	    PyErr_Format(PyExc_AttributeError,
+	                 "'%.50s' object has no attribute '%U'",
+	                 tp->tp_name, name);
+	  done:
+	    Py_DECREF(name);
+	    return res;
+	}
+
+Выясним что такое 'PyDescr_IsData':
+
+c:
+	//cpython/Include/descrobject.h
+	#define PyDescr_IsData(d) (Py_TYPE(d)->tp_descr_set != NULL)
+
+Переведем на помесь python и псевдокода
+	
+raw:
+	def PyObject_GenericGetAttr(obj, name):
+		tp_attr = getattr(obj.__class__, name, NULL)
+		f = getattr(tp_attr, '__get__', NULL)
+		if f != NULL:
+			if hasattr(tp_attr, '__set__'):
+				return f(obj) 
+		if obj have_a __dict__:
+			return obj.__dict__[name]
+		if f != NULL:
+			return f(obj) 
+		if tp_attr != NULL:
+			return tp_attr
+		raise AttributeError('......')
+	
+Ситуация проясняется, переходим к 'type.__new__'.
+
+c:
+	//cpython/objects/typeobject.c 
+	static PyObject *
+	type_new(PyTypeObject *metatype, PyObject *args, PyObject *kwds)
+	{
+	    // ... 453 строки разного, не важного для нас сейчас кода
+
+	    /* Put the proper slots in place */
+	    fixup_slot_dispatchers(type);
+
+    	return (PyObject *)type;	
+	}
+
+	'fixup_slot_dispatchers' должен настроить слоты создаваемого объекта
+(в python CAPI слотами называются все поля 'PyObject' 'tp_getattr'/'tp_getattro' - слоты)
+'fixup_slot_dispatchers' использует 'slotdefs' для обновления слотов следующая  
+остановка - 'slot_tp_getattro' и 'slot_tp_getattr_hook'. 
+
+c:
+	// Используется если __getattribute__ перегружен а __getattr__ - нет.
+	// Изначально fixup_slot_dispatchers всегда помещает в объект
+	// slot_tp_getattr_hook и уже она произведет подмену себя на
+	// slot_tp_getattro, если в объекте нет __getattr__
+	// __getattribute__ есть всегда
+
+	static PyObject *
+	slot_tp_getattro(PyObject *self, PyObject *name)
+	{
+	    static PyObject *getattribute_str = NULL;
+	    return call_method(self, "__getattribute__", &getattribute_str,
+	                       "(O)", name);
+	}
+
+
+	static PyObject *
+	slot_tp_getattr_hook(PyObject *self, PyObject *name)
+	{
+	    PyTypeObject *tp = Py_TYPE(self);
+	    
+	    .....
+	    // всякие проверки
+	    .....
+	    	
+	    // если нет __getattr__ вызываем slot_tp_getattro
+	    // и подменяем слот на slot_tp_getattro для будущих вызовов
+	    getattr = _PyType_Lookup(tp, getattr_str);
+	    if (getattr == NULL) {
+	        /* No __getattr__ hook: use a simpler dispatcher */
+	        tp->tp_getattro = slot_tp_getattro;
+	        return slot_tp_getattro(self, name);
+	    }
+
+
+	    getattribute = _PyType_Lookup(tp, getattribute_str);
+
+	    // если __getattribute__ не определен, или если он
+	    // ссылается на PyObject_GenericGetAttr
+	    // маленькая оптимизация
+	    if (getattribute == NULL ||
+	        (Py_TYPE(getattribute) == &PyWrapperDescr_Type &&
+	         ((PyWrapperDescrObject *)getattribute)->d_wrapped ==
+	         (void *)PyObject_GenericGetAttr))
+		    // ищем атрибут, используя PyObject_GenericGetAttr
+	        res = PyObject_GenericGetAttr(self, name);
+	    else {
+	        // есть __getattribute__, оличный от PyObject_GenericGetAttr
+	        
+	        Py_INCREF(getattribute);
+	        res = call_attribute(self, getattribute, name);
+	        Py_DECREF(getattribute);
+	    }
+
+	    // если ничего не нашли и есть исключение PyExc_AttributeError - очищаем исключение
+	    // и вызываем self.__getattr__
+
+	    if (res == NULL && PyErr_ExceptionMatches(PyExc_AttributeError)) {
+	        PyErr_Clear();
+	        res = call_attribute(self, getattr, name);
+	    }
+	    Py_DECREF(getattr);
+	    return res;
+	}
+
+Теперь можно восстановить всю картину: 'a.b' => Если: 
+	* '__getattribute__' был перегружен, то вызывается он.
+	* есть свойство-данное - вызывается оно
+	* 'b' присутствует в 'a.__dict__', возвращаем 'a.__dict__['b']'
+	* есть какое-нить свойство - вызывается оно
+	* 'b' найдено в 'A.__dict__' или в '__dict__' одного из базовых для 'A' классов,
+		возвращается оно 
+	* Если не перегружен '__getattr__' - исключение/результат возвращаются
+	* Если перегружен '__getattr__' и ничего не найдено и тип исключения
+		'AttributeError' - вызывается '__getattr__'
+	* исключение/результат возвращаются
+
+Очень Важная Картинка:
+	attribute.jpg
+
+Нетривиальный результат:
+
+python:
+	class X(object):
+		def __getattribute__(self, name):
+			raise AttributeError(name)
+		
+		f = 1
+
+		def __getattr__(self, name):
+			return name
+
+	В таком классе поле 'f' будет всегда игнорироваться, но если '__getattribute__' убрать
+- то все вернется на свои места и 'X().f' будет равно 1, а 'X().d == d'. 
+
+	После просмотра кода возникает вопрос - какой ценой достается эта гибкость?
+Замеряем скорость доступа к разным вариантам атрибутов:
+
+python:
+	# глобальная переменная
+	global_var = 1
+
+	# пустая функция
+	def empty_func():
+		pass
+	
+	# доступ к глобальной переменной из функции
+	def global_var_from_func():
+		global_var
+
+	# доступ к локальной переменной из функции
+	def local_var_from_func():
+		local_var = 1
+		local_var
+	
+	# сложение целых
+	a = 1
+	# int + int
+	a + a
+
+	class A1(object):
+		def __getattribute__(self, name):
+			return None
+
+	class A2(object):
+		
+		def get_b(self):
+			return None
+
+		def set_b(self, val):
+			pass
+		
+		b = property(get_b, set_b)
+	
+	class A3(object):
+		def __init__(self):
+			self.b = None
+	
+	class A4(object):
+		def get_b(self):
+			return None
+
+		b = property(get_b)
+
+	class A5(object):
+		b = None
+
+	
+	# создаем иерархию со 128ю уровнями вложенности наследования
+	# атрибут 'b' будет у "самого базового" класса
+	# в использовать для доступа будет экзампляр "самого дочернего"
+	
+	class A6(object):
+		b = None
+	
+	for i in range(127):
+		A6 = type('A6', (A6,), {})
+	
+	a6 = A6()
+
+	class A7(object):
+		def __getattr__(self, name):
+			return None
+
+Время замерянно на Core i7-2630QM, 2Ghz.
+Ubuntu 11.10, python 2.7.2, 64bit 
+
+raw:
+	+----------------------------------------------------------------------------------------+
+	|              Операция               | время нс | diff % |   относительное | такты CPU  |
+	|       показывающая где берется      |          |        |       время     |            |
+	|               aX.b                  |          |        |  time/(a.b time)|            |
+	|----------------------------------------------------------------------------------------|
+	|          Global var access          |     7.4  |    0   |        0.2      |      15    |
+	|           Empty func call           |    66.2  |    2   |        2.2      |     132    |
+	|         Global var from func        |     9.3  |    0   |        0.3      |      19    |
+	|         Local var from func         |     7.4  |    0   |        0.3      |      15    |
+	|              int + int              |    17.5  |    1   |        0.6      |      35    |
+	|      A1.__getattribute__(a, 'b')    |   178.9  |    1   |        6.0      |     358    |
+	|     A2.b.__get__(a) data property   |   139.4  |    0   |        4.7      |     279    |
+	|           a3.__dict__['b']          |    30.0  |    1   |        1.0      |      60    |
+	|       A4.b.__get__(a) property      |   140.0  |    1   |        4.7      |     280    |
+	|            A5.__dict__['b']         |    21.6  |    0   |        0.7      |      43    |
+	|            A6.__dict__['b']         |    21.6  |    1   |        0.7      |      43    |
+	|        A7.__getattr__(a, 'b')       |   517.0  |    4   |       17.2      |    1034    |
+	|                a.b.b                |    54.1  |    2   |        1.8      |     108    |
+	|              a.b.b.b.b              |   103.5  |    2   |        3.4      |     207    |
+	|             a....b (128)            |  3428.5  |    1   |      114.0      |    6857    |
+	+----------------------------------------------------------------------------------------+
+
+diff - максимальный разброс времени в % на 10 измерениях, при выброшенных 2 крайних значениях.
+
+	В принципе все результаты ожидаемы, одинаковое время для 'A5.__dict__["b"]' и 'A6.__dict__["b"]'
+связанно с кешированием привязки имени классового атрибута к классу, так что на самом деле
+поиск по всей иерархии не производится.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	 
+
+

@@ -1,0 +1,53 @@
+digraph AttrAccess{
+	start              [label="a.b\nres = NULL"];
+	is_special         [label="b - special method?\n__some_builtin_method__"];
+	get_from_pyobject  [label="res = PyObject->some_field"];
+	start_getattribute [shape="diamond", label="__getattribute__\noverloaded?"];
+	user_getattribute  [label="res = A.__getattribute__(a, 'b')"];
+	is_data_descr      [shape="diamond", label="'b' in A\nand\nA.b is a data descriptor?"];
+	data_descr         [label="res = A.b(a)"];
+	is_in_dict         [shape="diamond", label="'b' in a.__dict__?"];
+	in_dict            [label="res = a.__dict__['b']"];
+	is_any_descr       [shape="diamond", label="'b' in A\nand\nA.b is a descriptor?"];
+	any_descr          [label="res = A.b(a)"];
+	is_A_has_b         [shape="diamond", label="hasattr(A, 'b')?"];
+	A_has_b            [label="res = A.b"];
+	getattr            [label="ClearException()\nres = A.__getattr__(a, 'b')"];
+	is_getattr [shape="diamond", label="hasattr(A,'__getattr__')\nand\n( ExceptionTp == AttributeError\nor\nres == NULL)"];
+
+	start -> is_special;
+
+	is_special -> get_from_pyobject [label="yes"];
+	is_special -> start_getattribute [label="no"];
+
+	get_from_pyobject -> end;
+
+	start_getattribute -> user_getattribute [label="yes"];
+	start_getattribute -> is_data_descr [label="no"];
+
+	user_getattribute -> is_getattr;
+
+	is_data_descr -> data_descr [label="yes"];
+	is_data_descr -> is_in_dict [label="no"];
+	data_descr -> is_getattr;
+
+	is_in_dict -> in_dict [label="yes"];
+	is_in_dict -> is_any_descr [label="no"];
+
+	in_dict -> end;
+
+	is_any_descr -> any_descr [label="yes"];
+	is_any_descr -> is_A_has_b [label="no"];
+
+	any_descr -> is_getattr;
+
+	is_A_has_b -> is_getattr [label="no"];
+	is_A_has_b -> A_has_b [label="yes"];
+
+	A_has_b -> end;
+
+	is_getattr -> getattr [label="yes"];
+	is_getattr -> end [label="no"];
+
+	getattr -> end;
+}

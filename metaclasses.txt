@@ -1,0 +1,690 @@
+		==========================================================
+		Метаклассы в python 2.X с примерами и полным разоблачением
+		==========================================================
+
+Author: Konstantyn Danylov <koder.mail@gmail.com>
+
+Disclamer
+========= 
+
+* Приведенный код сознательно сокращен для упрощения понимания.
+  Для реального использования его нужно дорабатывать, впрочем не сильно.
+
+* Все описанное относится к "новым классам", т.е. прямо или косвенно
+  унаследованным от 'object'. Все кто во втором десятилетии 21го века 
+  не наследуют свои классы от 'object' создают себе лишние проблемы.
+  В python3 все объекты по умолчанию "новые".
+
+* Про метаклассы в python написано достаточно много (см. ссылки).
+  Эта статья основывается на моем опыте преподавания python, описывает некоторые 
+  темы, которые сложно найти (например почему метаклассы-функции не наследуются)
+  и включает большое количество примеров практического применения метаклассов. 
+
+Теория, часть 1. Метаклассы
+===========================
+
+	Все начинается с объявления класса:
+
+python:
+	class A(object):
+		field = 12
+		def method(self, param):
+			return param + self.field
+
+	Имеющие опыт программирования на компилируемых языках могут увидеть здесь 
+декларативную конструкцию, но это только обман зрения.
+В python всего две декларативные конструкции - объявление кодировки файла и
+импорт синтаксических конструкций "из будущего". Все остальное - исполняемое.
+Написанное объявление это синтаксический сахар для следующего:
+
+python:
+	txt_code = """
+	field = 12
+	def method(self, param):
+		return param + self.field
+	"""
+	
+	class_body = {}
+	compiled_code = compile(txt_code, __file__, "exec")
+	eval(compiled_code, globals(), class_body)
+	A = type("A", (object,), class_body)
+
+	Оба этих способа создать класс 'A' совершенно эквивалентны. 
+Окончательно убедиться в том, что объявление класса исполнимо 
+можно посмотрев вот на это:
+
+python:
+	def this_is_not_cplusplus(some_base_class, num_methods):
+		class Result(some_base_class):
+			x = some_base_class()
+			for pos in range(num_methods):
+				# добавим функцию в locals - она попадает в тело 
+				# класса Result и станет его методом
+				locals()['method_' + str(pos)] = \
+						lambda self, m : m + num_methods
+		return Result
+		
+	class_with_10_methods = this_is_not_cplusplus(object, 10)
+	class_with_20_methods = this_is_not_cplusplus(
+								class_with_10_methods, 20)
+	print class_with_10_methods().method_3(2) # напечатает 12
+	print class_with_20_methods().method_13(2) # напечатает 22
+
+	Функция 'this_is_not_cplusplus' создает новый класс каждый 
+раз, когда мы ее вызываем, используя переданный тип в качестве базового и 
+создавая в новом классе такое количество методов, какое мы запросили.
+
+	Но вернемся ко второму блоку кода. В нем нас особенно интересует последняя 
+строка:
+
+python:
+	A = type("A", (object,), class_body)
+
+	Она похожа на инстанцирование типа 'type', и это на самом деле так.
+Т.е. класс 'A' это экзампляр типа 'type'. В python есть некая супер иерархия 
+типов - снизу находятся экземпляры обычных классов, потом обычные классы 
+(унаследованные от 'object' или он ничего) и на самом верху 'type' (который, 
+кстати, экземпляр самого себя) и все, что от него унаследовано - метаклассы. 
+Инстанцируя метаклассы мы получаем обычные классы - метаклассы являются типами 
+классов. При этом, как и объекты, классы хранят свои метаклассы в атрибуте 
+'__class__'. Так-же, как классы управляют жизненным циклом объектов и их 
+поведением метаклассы управляют жизненным циклом и поведением классов.
+
+	Начнем с простого:
+
+python:
+	class MyMeta(type):
+		pass
+		
+	'MyMeta' простейший метакласс. Если в теле класса присвоить его полю 
+'__metaclass__' то он будет использован для конструирования класса и станет его 
+типом:
+	
+python:
+	class A(object):
+		pass
+
+	class B(A):
+		__metaclass__ = MyMeta
+		
+	class C(B):
+		pass
+
+	print "type(A) =", type(A) 
+	# напечатает "type(A) = <type 'type'>"
+	
+	print "type(B) =", type(B) 
+	# напечатает "type(B) = <class '__main__.MyMeta'>"
+	
+	print "type(C) =", type(C) 
+	# напечатает "type(C) = <class '__main__.MyMeta'>"
+
+	В итоге 'B' и 'C' имеют тип 'MyMeta'. Т.е. метаклассы наследуются.
+Я напомню, что инстанцирование класса в питоне это тоже синтаксический сахар:
+	
+python:
+	c = SomeClass(1, x=12) 
+	
+=>
+	
+python:
+	c = SomeClass.__new__(SomeClass, 1, x=12)
+	SomeClass.__init__(c, 1, x=12)
+	
+	'__new__' создает новый объект класса, а '__init__' инициализирует его. 
+Здесь полная аналогия с С++ методами 'new' и конструктором (чаще всего '__new__' 
+наследуется от 'object'). Рассмотрим эти методы на примере: 
+	
+python:
+	class MyMeta2(type):
+		def __new__(cls, name, bases, class_dict):
+			print "__new__({0}, {1}, {2}, {3})".format(
+						cls, name, bases, class_dict)
+			return super(MyMeta2, cls).__new__(cls, 
+									           name, 
+									           bases, 
+									           class_dict)
+
+		def __init__(self, name, bases, class_dict):
+			print "__init__({0}, {1}, {2}, {3})".format(
+				cls, name, bases, class_dict)
+			return super(MyMeta2, self).__init__(self, 
+												 name, 
+												 bases, 
+												 class_dict)
+		
+	class D(object):
+		__metclass__ = MyMeta2
+		x = 12
+
+Эта конструкция напечатает ожидаемые строки:
+
+raw:
+	__new__(<class '__main__.MyMeta2'>, D, (<type 'object'>,), 
+			{'x': 12, '__module__': '__main__', 
+				'__metaclass__': <class '__main__.MyMeta2'>})
+	__init__(<class '__main__.D'>, D, (<type 'object'>,), 
+			{'x': 12, '__module__': '__main__', 
+				'__metaclass__': <class '__main__.MyMeta2'>})		
+
+Практика
+========
+
+	Что мы получили по итогу - с помощью метаклассов можно:
+
+* Изменять типы создаваемых классов
+
+* Автоматически вызывать некоторый код при каждом прямом или непрямом 
+	  наследовании данного класса
+
+* Менять параметры нового класса - метакласс может подменить в методе 
+  '__new__' переменные 'name', 'bases', 'class_dict' до их передачи в 
+  'type.__new__' или повлиять на полученный класс.
+
+	Альтернативные методы некоторых возможностей метаклассов реализуют 
+декораторы, но: 
+
+* декораторы классов исполняются уже после создания класса, и 
+  некоторые модификации класса в них более громоздки (аналогично методу 
+  '__init__' метаклассов). Так-же метакласс может влиять на список базовых 
+  классов 
+
+* декораторы функций требуют применения к каждому методу в отдельности, в то 
+  время как метаклассы позволяют применять функциональность 
+  ко всем методам объекта сразу.
+
+	Чаще всего в метаклассе перегружается метод '__new__' , позволяющий менять 
+параметры класса до создания. Читая все ниже написаное нужно помнить, что 
+достичь того-же эффекта часто можно и без метаклассов, но придется писать больше 
+однообразного кода. Метаклассы, как и многие возможности python, позволяют 
+писать удобные для использования библиотеки, но менее полезны для написания 
+конечного продукта.
+	
+	Итак какие практические результаты мы можем извлечь из этого метасчастья?
+Разобьем примеры использования по списку возможностей метаклассов:
+
+Изменять типы создаваемых классов
+------------------------------------
+
+	Большое количество синтаксических конструкций python преобразуются в вызовы
+специальных методов класса используемого объекта, с передачей объекта параметром
+в метод, например:
+
+python:
+	a + b => a.__class__.__add__(a, b)
+	a.c => a.__class__.__getattr__(a, 'c')
+
+	# кроме этого a.__class__.__dict__ будет использован для 
+	# поиска атрибута 'c', если он не будет найден
+	# в a.__dict__. Вообще говоря поиск атрибута в объекте длинная 
+	# история - о ней будет своя статья
+	
+	str(a) => a.__str__(a)
+	iter(a) => a.iter(a)
+	
+	# и т.д.
+	
+	Таким образом мы можем перегрузить операторы для класса, перегрузив 
+соответствующие методы в его метаклассе. Например наследование при помощи 
+сложения:
+
+python:
+	class MixinMeta(type):
+		def __add__(self, other_type):
+			new_name = "Mixin_{0}_{1}".format(self.__name__,
+											  other_type.__name__)
+			# явное построение нового класса, наследующего текущий и 
+			# 'other_type'
+			
+			return self.__class__(new_name,
+								  (self, other_type),
+						          {})
+
+	class Mixin(object):
+		__metaclass__ = MixinMeta
+
+	class A(Mixin):
+		x = 'A.x'
+		y = 'A.y'
+
+	class B(object):
+		x = 'B.x'
+		z = 'B.z'
+
+	print (A + B).y  # A.y
+	print (A + B).x  # A.x
+	print (A + B).z  # B.z
+	
+	# можно и так
+
+	class C(object):
+		pass
+	
+	tp = Mixin + C + B
+
+	'MixinMeta' позволяет создавать дочерний класс складывая базовые - вместо 
+'class C(A,B):pass' писать 'A+B'. Точно так-же можно, например, облагородить 
+'str(A)' или хранить в классе список ссылок на все его экземпляры и итерировать 
+по ним используя (этот пример идет в конце, поскольку использует все возможности
+метаклассов). Точно так-же, как и '__add__' все  атрибуты и методы метаклассов 
+доступны через его классы однако не через экземпляры этих классов.
+
+python:
+	class M(type):
+		X = 1
+
+	class B(object):
+		__metaclass__ = M
+	
+	b = B()
+
+	print M.X  # 1
+	print B.X  # 1
+	print b.x  # => AtrributeError
+ 
+Поиск атрибута производится по объекту и его типу, но не по типу его типа.
+
+
+Автоматически вызывать некоторый код при каждом прямом или непрямом наследовании данного класса
+-----------------------------------------------------------------------------------------------
+
+	Это позволяет вести реестр всех классов, унаследовавших данный интерфейс. 
+Удобно для написания плагинов и других расширяемых архитектур.
+
+python:
+	# в файле plugin_api.py
+
+	plugin_registry = {}
+	
+	def registry_meta():
+		class RegMeta(type):
+			def __new__(cls, name, bases, cls_dict):
+				new_cls = super(RegMeta, cls).__new__(name, 
+												      bases, 
+												      cls_dict)
+				plugin_registry.setdefault(name, []).append(new_cls)
+				return new_cls
+	
+	def get_all_implementations(interface):
+		return plugin_registry[interface.__name__]
+	
+	class IDataGridUI(object):
+		__metaclass__ = registry_meta()
+		provides_ui = None
+		def display_my_data(self, data):
+			pass
+			
+	# в файле  data_display_html_qt.py
+	from plugin_api import IDataGridUI
+	
+	class QtDataDisplayer(IDataGridUI):
+		provides_ui = 'qt'
+		def display_my_data(self, data):
+			#some qt code
+		
+	class HTMLDataDisplayer(IDataGridUI):
+		provides_ui = 'html'
+		def display_my_data(self, data):
+			#some template code
+
+	# в файле build_ui.py
+	from plugin_api import get_all_childs
+	print get_all_implementations(IDataGridUI) 
+			# [..., QtDataDisplayer, HTMLDataDisplayer, ....]
+	
+	Нужно учесть что для того, что-бы реализация попала в реестр файл реализации 
+должен быть импортирован где нибудь до до вызова 'get_all_implementations'. 
+Имея реестр всех реализаций можно, например,
+автоматически расширять API программы (Rpc/REST/командная строка).
+
+Изменять параметры создаваемого дочернего класса
+--------------------------------------------------
+
+Свойство с наиболее обширным спектром применений. Варианты его применения:
+Реализовать возможности аспектно-ориентированного подхода - автоматически 
+модифицировать поля и методы класса, основываясь на их имени:
+	
+python:
+	class PropertyAutoMakerMeta(type):
+		"""автоматически делает property из всех 
+			всех методов вида get_Something"""
+		
+		get_prefix = 'get_'
+		
+		def __new__(cls, name, bases, cls_dict):
+			
+			add_props = {}
+			for fname, val in cls_dict.items():
+				if fname.startswith(cls.get_prefix) and callable(val):
+					prop_name = fname[len(cls.get_prefix):]
+					add_props[prop_name] = property(fget=val, 
+													doc=val.__doc__)
+			
+			cls_dict.update(add_props)
+
+			return super(PropertyAutoMakerMeta, 
+							cls).__new__(cls, name, bases, cls_dict)
+		
+
+	class PropertyAutoMaker(object):
+		__metaclass__ = PropertyAutoMakerMeta
+
+	class A(PropertyAutoMaker):
+		def get_X(self):
+			return 1
+
+	print A().X # 1
+	
+    Изменять наборы параметров методов, применять к ним декораторы, менять 
+документацию, байтокод, добавлять/убирать базовые классы, etc. 
+	Например - проверка соответствия объекта заявленному интерфейсу:
+
+python:
+    from interface import Interface, ImplementsBase
+    
+    class MyInterface(Interface):
+        def func(x, y, z):
+            ok(x).is_a(int)
+            ok(y).in_((1,2,3))
+
+    class Impl(ImplementsBase):
+        __implements__ = [MyInterface]
+        def func(self, x, y, z=13):
+            pass
+
+    Код модуля interface слишком большой для этой стать и находится здесь:
+https://github.com/koder-ua/Interface_example .
+
+	При конструировании 'Impl' будет проверенно что он предоставляет все 
+функции, требуемые от 'MyInterface' совместимость сигнатуры (т.е. любой набор
+параметров, который синтаксически подходит для 'MyInterface.func1' синтаксически
+подходит для 'Impl.func'). Так-же при отладочных настройках перед каждым вызовом
+'Impl.func' будет вызываться 'MyInterface.func1', которая проверит ограничения 
+на входные параметры. Т.е. система с одной стороны проверяет, что класс 
+предоставляет необходимые методы, а с другой проверяет что при вызове
+в методы передаются правильные параметры. Эту функциональность можно расширить 
+разными способами - извлекать ограничения на типы из строк документации,
+вести реестр всех реализаций интерфейса, добавить автоматическую проверку пост 
+и пред условий на объект, проверять поля класса и т.д.
+
+Простой ORM:
+
+python:
+    class Field(object):
+	    class Base(object):
+		    pass
+	    class Int(Base):
+		    pass
+	    class String(Base):
+		    pass
+
+    class LittleORMMeta(type):
+	    def __new__(cls, name, bases, cls_dict):
+		
+		    fields = []
+		    for fname, tp in cls_dict.items():
+			    try:
+				    if issubclass(tp, Field.Base):
+					    fields.append(fname)
+			    except TypeError:
+				    pass		
+					
+		    cls_dict['_fields'] = fields
+		
+		    return super(LittleORMMeta, cls).__new__(cls, name, 
+		    										 bases, cls_dict)
+	
+	    def __lshift__(self, fields):
+		    self.insert(**fields)
+		
+    class Table(object):
+	    __metaclass__ = LittleORMMeta
+
+	    @classmethod
+	    def execute(cls, request):
+		    print request
+
+	    @classmethod
+	    def insert(cls, **fields):
+		    insert_request = "insert into {0} ({1}) values ({2})"
+		    fields = ','.join(cls._fields)
+		    values = ','.join(
+		    				repr(fields[fname]) 
+		    					for fname in cls._fields))
+
+		    cls.execute( 
+			    insert_request.format( cls.__name__, fields, values)
+			    )
+
+    class MyTable(Table):
+	    rec_id = Field.Int
+	    name = Field.String
+
+    #Table.connect(conn_str)
+
+    MyTable << dict(rec_id=1, name='a')
+    MyTable << dict(rec_id=2, name='b')
+    MyTable << dict(rec_id=3, name='c')
+
+	Система автоматического логирования всех вызовов. В функции 'log_call' 
+можно реализовать расширенную фильтрацию логов:
+
+python:
+	def logme(class_name, func):
+		name = "{0}.{1}".format(class_name, func)
+		@functools.wraps(func)
+		def closure(self, *dt, **mp):
+			log_call(name, dt, mp)
+			return func(self, *dt, **mp)
+		return closure
+	
+	class CallLoggerMeta(type):
+		def __new__(cls, name, bases, cdict):
+			for fname, val in cdict:
+				if isinstance(val, types.FunctionType):
+					cdict[fname] = logme(name, val)
+			return super(CallLoggerMeta, cls).\
+							__new__(cls, name, bases, cdict)
+	
+	В общем можно слепить из входящего в полях 'name', 'bases' и 'cls_dict' 
+пластилина то, что нам нужно. Обещанный пример класса, ведущего список всех 
+своих экземпляров и позволяющего по ним итерировать:
+	
+python:
+	class IterOverChildsMeta(type):
+		def __new__(cls, name, bases, cls_dict):
+			fname = '_{0}__all_childs'.format(name)
+			
+			cls_dict[fname] = []
+			ntype = super(IterOverChildsMeta, 
+						cls).__new__(cls, name, bases, cls_dict)
+			old_new = ntype.__new__
+			
+			def closure(cls1, *args, **kwargs):
+				# workaroud for warning
+				if old_new is object.__new__:
+					obj = old_new(cls1)
+				else:
+					obj = old_new(cls1, *args, **kwargs)
+					
+				# skip objects of a child classes
+				if cls1.__name__ == name:
+					# real code should use weakref.ref here
+					ntype.__dict__[fname].append(obj)
+				return obj
+			
+			ntype.__new__ = classmethod(closure)
+			return ntype
+		
+		def __iter__(self):
+			return iter(getattr(self, 
+							'_{0}__all_childs'.format(self.__name__)))
+
+
+	class IterOverChilds(object):
+		__metaclass__ = IterOverChildsMeta
+
+	class A(IterOverChilds):
+		def __init__(self, name):
+			self.name = name
+		def __str__(self):
+			return "<A name={0!r}>".format(self.name)
+
+	a1 = A('a1')
+	a2 = A('a2')
+
+	for obj in A:
+		print obj
+
+Теория, часть 2 - наследование метаклассов и метаклассы-функции
+================================================================
+ 
+	Python позволяет присвоить полю  '__metaclass__' функцию - она будет 
+вызвана вместо методов '__new__' и '__init__' метакласса.
+
+python:
+	def meta_func(name, bases, dct):
+		print "meta_func called"
+		return type(name, bases, dct)
+	
+	class F(object):
+		__metaclass__ = meta_func
+	# здесь напечатается 'meta_func called'
+
+	Как мы знаем если у одного из родительских классов тип отличается от 'type',
+то для создания дочернего класса будет использован он, это позволяет метаклассам 
+наследоваться. Функция-метакласс не может стать типом создаваемого класса и, 
+соответственно, не наследуется. Итого - пусть у нас есть такая иерархия классов:
+
+python:
+	class MetaClass(type):
+		def __new__(cls, name, bases, dct):
+			print name + ":metaclass == MetaClass"
+			return super(MetaClass, cls).__new__(cls, name, bases, dct)
+
+	def meta_func(name, bases, dct):
+		print name + ":metaclass == meta_func"
+		return type(name, bases, dct)
+
+	class A(object):
+		__metaclass__ = MetaClass
+
+	class B(A):
+		pass
+
+	class C(object):
+		pass
+
+	class D(A, C):
+		pass
+
+	class E(C, A):
+		pass
+
+	class F(object):
+		__metaclass__ = meta_func
+
+	class G(F):
+		pass
+
+	for cls in [A, B, C, D, E, F, G]:
+		print "{0}.__class__ == {1}".format(cls.__name__, 
+											cls.__class__.__name__)
+    
+    Вопрос - что будет напечатанное при ее конструировании и какие метаклассы 
+будут у полученных классов? Ответ: для конструирования 'A', 'B', 'D' и 'E' будет 
+использован 'MetaClass', для конструирования 'F' будет использована 
+'meta_func'. Для конструирования 'C' и 'G' будет использован 'type'. Для 'A', 
+'B', 'D' и 'E' '__class__' будет 'MetaClass', для 'F', 'G' и 'C' будет 'type'.
+
+	А как все обстоит с множественным наследованием, если у двух или более 
+базовых классов есть метакласс? Python не может самостоятельно разобраться в 
+этой ситуации и заставит нас сделать все руками:
+
+python:
+	class MetaClass(type):
+		def __new__(cls, name, bases, dct):
+			print name + ":metaclass == MetaClass"
+			return super(MetaClass, cls).__new__(cls, name, bases, dct)
+
+
+	class A(object):
+		__metaclass__ = MetaClass
+
+
+	class SecondMetaClass(type):
+		def __new__(cls, name, bases, dct):
+			print name + ":metaclass == SecondMetaClass"
+			return super(SecondMetaClass, 
+						 cls).__new__(cls, name, bases, dct)
+
+	class H(object):
+		__metaclass__ = SecondMetaClass
+
+	class J(H, A):
+		pass
+
+
+Это приведет к:
+
+traceback:
+	Traceback (most recent call last):
+	  File "test.py", line 19, in <module>
+	    class J(H, A):
+	  File "test.py", line 14, in __new__
+	    return super(SecondMetaClass, cls).__new__(cls, name, bases, dct)
+	TypeError: Error when calling the metaclass bases
+	    metaclass conflict: the metaclass of a derived class must be a 
+	    	(non-strict) subclass of the metaclasses of all its bases
+
+	Что-бы унаследовать классы 'A' и 'H' в указанном примере, нужно создать 
+класс, наследующий 'MetaClass' и 'SecondMetaClass' и определить его, как 
+метакласс для 'J'. Впрочем создание такого класса можно автоматизировать:
+        
+python:
+	def meta_base(name, bases, cdict, add_meta = tuple()):
+
+		meta_set = set(cls.__class__ 
+							for cls in bases 
+								if cls.__class__ is not type)
+
+		if len(meta_set) != 0:
+			new_meta = type("tempo_meta", tuple(meta_set), {})
+		else:
+			new_meta = type		
+
+		return new_meta(name, bases, cdict) 
+
+	class J(H, A):
+		__metaclass__ = meta_base
+	
+Если нужно добавить еще метаклассов, кроме базовых:
+
+python:    
+    def meta_base_plus(**metas):
+        def closure(name, bases, cdict) :
+            return meta_base(name, bases, cdict, 
+            				 add_meta=metas)
+        return closure
+
+	class Jplus(H, A):
+	    __metaclass__ = meta_base_plus(SomeAdditionalMeta1, 
+	    							   SomeAdditionalMeta2)
+
+
+	Метаклассы представляют достаточно мощный инструмент для создания повторно 
+используемого кода, но результат их деятельности может стать большой 
+неожиданностью для тех, кто будет их использовать. Это подчеркивает важность 
+документирования всей нетривиальной функциональности, реализованной с их 
+помощью.
+
+Ссылки:
+	http://www.python.org/download/releases/2.2/descrintro/
+	http://gnosis.cx/publish/programming/metaclass_1.html
+	http://gnosis.cx/publish/programming/metaclass_2.html
+	http://gnosis.cx/publish/programming/metaclass_3.html
+	http://www.ibm.com/developerworks/linux/library/l-pymeta/index.html
+	http://www.voidspace.org.uk/python/articles/metaclasses.shtml
+	http://peak.telecommunity.com/PyProtocols.html
+	http://pypi.python.org/pypi/zope.interface/3.8.0
+	http://www.python.org/dev/peps/pep-0246/
