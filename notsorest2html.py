@@ -1,3 +1,5 @@
+# -*- coding:utf8 -*-
+
 import os
 import re
 import sys
@@ -155,7 +157,7 @@ def highlight_c(code):
 #re_italic = re.compile(r"(?ims)'(.*?)'")
 re_bold = re.compile(r"(?ims)'(.*?)'")
 re_autor = re.compile("(?ims)^:Author:.*?$")
-re_href = re.compile(r"(https?://)(.*?)\s")
+re_href = re.compile(r"(https?://)(.*?)(\s|$)")
 
 class NotSoRESTHandler(object):
     def __init__(self):
@@ -200,7 +202,11 @@ class BlogspotHTMLProvider(NotSoRESTHandler):
         self.write(highlight_python(deindent_snippet(block)).strip())
     
     def on_img(self, url):
-        self.write('<br><img src="{0}" width="550" /><br>'.format(url.strip()))
+        url = url.strip()
+        if url.endswith('svg'):
+            self.write('<object data="{0}" type="image/svg+xml"></object>'.format(url)) 
+        else:
+            self.write('<br><img src="{0}" width="600" /><br>'.format(url))
 
     def on_list(self, items):
         self.write("<ul>")
@@ -228,15 +234,23 @@ class BlogspotHTMLProvider(NotSoRESTHandler):
         ntext = escape_html(text)
         ntext = re_bold.sub(ur"<b>\1</b>", ntext)
         return re_href.sub(self.process_href, ntext)
+    
+    def write_footer(self):
+        self.write(u"Исходники этого и других постов со скриптами лежат тут")
+        self.write(u' - <a href="https://github.com/koder-ua/python-lectures">')
+        self.write(u'github.com/koder-ua/python-lectures</a>. При использовании ')
+        self.write(u'их, пожалуйста, ссылайтесь на ')
+        self.write(u'<a href="http://koder-ua.blogspot.com/">koder-ua.blogspot.com/</a>.</p>')
 
 
 def not_so_rest_to_html(text):
     formatter = BlogspotHTMLProvider()
-
+    text = text.lstrip().split('\n', 3)[3]
     for block_data in find_blocks(text.replace('\t', ' ' * 4)):
         for block_type, btext in classify_block(block_data):
             formatter.process(block_type, btext)
     
+    formatter.write_footer()
     return formatter.get_result()
 
 def main():
