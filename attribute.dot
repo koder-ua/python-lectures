@@ -1,4 +1,5 @@
 digraph AttrAccess{
+	fontsize = 24;
 	start              [label="a.b\nres = NULL"];
 	is_special         [label="b - special method?\n__some_builtin_method__"];
 	get_from_pyobject  [label="res = PyObject->some_field"];

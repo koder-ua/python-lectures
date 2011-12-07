@@ -185,16 +185,16 @@ c:
 	//cpython/Include/descrobject.h
 	#define PyDescr_IsData(d) (Py_TYPE(d)->tp_descr_set != NULL)
 
-Переведем на помесь python и псевдокода
+Переведем на почти python
 	
-raw:
+python:
 	def PyObject_GenericGetAttr(obj, name):
 		tp_attr = getattr(obj.__class__, name, NULL)
 		f = getattr(tp_attr, '__get__', NULL)
 		if f != NULL:
 			if hasattr(tp_attr, '__set__'):
 				return f(obj) 
-		if obj have_a __dict__:
+		if obj.have_a_slot(__dict__):
 			return obj.__dict__[name]
 		if f != NULL:
 			return f(obj) 
@@ -300,7 +300,9 @@ c:
 	* исключение/результат возвращаются
 
 Очень Важная Картинка:
-	attribute.jpg
+
+img:
+	https://github.com/koder-ua/python-lectures/raw/master/attribute.jpg
 
 Нетривиальный результат:
 
@@ -414,10 +416,18 @@ raw:
 
 diff - максимальный разброс времени в % на 10 измерениях, при выброшенных 2 крайних значениях.
 
-	В принципе все результаты ожидаемы, одинаковое время для 'A5.__dict__["b"]' и 'A6.__dict__["b"]'
-связанно с кешированием привязки имени классового атрибута к классу, так что на самом деле
-поиск по всей иерархии не производится.
-
+	В принципе все результаты, кроме одного, ожидаемы, одинаковое время для 'A5.__dict__["b"]' 
+и 'A6.__dict__["b"]' связанно с кешированием привязки имени классового атрибута к классу, 
+так что на самом деле поиск по всей иерархии не производится. Не совсем только понятно
+почему так сильно "тормозит" '__getattr__'. Тестирующий скрипт лежит тут -
+https://github.com/koder-ua/python-lectures/blob/master/attribute_access.py. Тестирование 
+производительности отдельная достаточно большая тема, которой я собираюсь посвятить
+отдельный пост в ближайшем будущем. Получить указанные тайминги и погрешность на уровне <5% 
+простым использованием timeit.timeit не получится.
+	
+	Исходники этого и других постов со скриптами лежат тут - https://github.com/koder-ua/python-lectures.
+При использовании их, пожалуйста, ссылайтесь на http://koder-ua.blogspot.com/.
+	
 
 
 

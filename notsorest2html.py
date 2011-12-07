@@ -199,6 +199,9 @@ class BlogspotHTMLProvider(NotSoRESTHandler):
     def on_python(self, block):
         self.write(highlight_python(deindent_snippet(block)).strip())
     
+    def on_img(self, url):
+        self.write('<br><img src="{0}" width="550" /><br>'.format(url.strip()))
+
     def on_list(self, items):
         self.write("<ul>")
         for item in items:
