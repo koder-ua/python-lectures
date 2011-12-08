@@ -64,6 +64,8 @@ def classify_block(block):
     if u'\n' not in block:
         if typed_str.match(block):
             yield block.split(':', 1)
+        elif block.startswith('* '):
+            yield LIST, [block[2:]]
         else:
             yield TEXT, block
     else: 
