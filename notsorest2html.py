@@ -60,6 +60,7 @@ typed_block = re.compile("([-a-zA-Z_]+):$")
 typed_str = re.compile("[-a-zA-Z_]+:.*$")
 
 def classify_block(block):
+    block = block.lstrip()
     if u'\n' not in block:
         if typed_str.match(block):
             yield block.split(':', 1)
@@ -157,7 +158,7 @@ def highlight_c(code):
 #re_italic = re.compile(r"(?ims)'(.*?)'")
 re_bold = re.compile(r"(?ims)'(.*?)'")
 re_autor = re.compile("(?ims)^:Author:.*?$")
-re_href = re.compile(r"(https?://)(.*?)(\s|$)")
+re_href = re.compile(r"(?P<name>\[.*?\])?(?P<proto>https?://)(?P<url>.*?)(?=\s|$)")
 
 class NotSoRESTHandler(object):
     def __init__(self):
@@ -206,8 +207,18 @@ class BlogspotHTMLProvider(NotSoRESTHandler):
         if url.endswith('svg'):
             self.write('<object data="{0}" type="image/svg+xml"></object>'.format(url)) 
         else:
-            self.write('<br><img src="{0}" width="600" /><br>'.format(url))
+            self.write('<br><img src="{0}" width="740" /><br>'.format(url))
 
+    def on_linklist(self, block):
+        self.write(u"Ccылки:<br>")
+        for line in block.split('\n'):
+            line = line.strip()
+            self.do_href(line)
+            self.write("<br>")
+
+    def do_href(self, ref_descr):
+        self.write(self.process_href(re_href.match(ref_descr))) 
+               
     def on_list(self, items):
         self.write("<ul>")
         for item in items:
@@ -225,10 +236,27 @@ class BlogspotHTMLProvider(NotSoRESTHandler):
         self.write(u"<br><h4>{0}</h4>".format(self.escape_html(block)) + '\n')
     
     def process_href(self, mobj):
-        g1 = mobj.group(1)
-        g2 = mobj.group(2)
-        self.refs.append( g1 + g2 )
-        return u'<a href="{0}{1}">{1}</a><br>'.format(g1, g2)
+        g1 = mobj.group('proto')
+        g2 = mobj.group('url')
+        name = mobj.group('name')
+
+        if g2[-1] in '.,':
+            add_symbol = g2[-1]
+            g2 = g2[:-1]
+        else:
+            add_symbol = ""
+
+        if not name:
+            name = g2
+        else:
+            name = name[1:-1]
+
+        #print repr(g1), repr(g2), repr(name), repr(add_symbol)
+
+        url = g1 + g2
+        self.refs.append( url )
+        
+        return u'<a href="{0}">{1}</a>{2}'.format(url, name, add_symbol)
 
     def escape_html(self, text):
         ntext = escape_html(text)
@@ -236,17 +264,20 @@ class BlogspotHTMLProvider(NotSoRESTHandler):
         return re_href.sub(self.process_href, ntext)
     
     def write_footer(self):
-        self.write(u"Исходники этого и других постов со скриптами лежат тут")
-        self.write(u' - <a href="https://github.com/koder-ua/python-lectures">')
-        self.write(u'github.com/koder-ua/python-lectures</a>. При использовании ')
-        self.write(u'их, пожалуйста, ссылайтесь на ')
-        self.write(u'<a href="http://koder-ua.blogspot.com/">koder-ua.blogspot.com/</a>.</p>')
-
+        self.write(u'Исходники этого и других постов со скриптами лежат тут - ')
+        self.do_href("[github.com/koder-ua]https://github.com/koder-ua/python-lectures.")
+        self.write(u'При использовании их, пожалуйста, ссылайтесь на ')
+        self.do_href("[koder-ua.blogspot.com]http://koder-ua.blogspot.com/.")
+ 
 
 def not_so_rest_to_html(text):
     formatter = BlogspotHTMLProvider()
-    text = text.lstrip().split('\n', 3)[3]
-    for block_data in find_blocks(text.replace('\t', ' ' * 4)):
+
+    text = text.replace('\t', ' ' * 4)
+    # skip header
+    text = text.split('\n', 3)[3]
+
+    for block_data in find_blocks(text):
         for block_type, btext in classify_block(block_data):
             formatter.process(block_type, btext)
     

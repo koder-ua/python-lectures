@@ -2,8 +2,6 @@
 		Метаклассы в python 2.X с примерами и полным разоблачением
 		==========================================================
 
-Author: Konstantyn Danylov <koder.mail@gmail.com>
-
 Disclamer
 ========= 
 
@@ -296,20 +294,31 @@ python:
 
 	plugin_registry = {}
 	
-	def registry_meta():
+	def get_registry():
 		class RegMeta(type):
+			def __init__(self):
+				self.interface_name = None
+
 			def __new__(cls, name, bases, cls_dict):
 				new_cls = super(RegMeta, cls).__new__(name, 
 												      bases, 
 												      cls_dict)
-				plugin_registry.setdefault(name, []).append(new_cls)
+
+				# первый раз этот вызов произойдет из тела интерфейса
+
+				if self.interface_name is None:
+					self.interface_name = name
+				else:
+					plugin_registry.setdefault(self.interface_name, []).append(new_cls)
+
 				return new_cls
+		return RegMeta
 	
 	def get_all_implementations(interface):
 		return plugin_registry[interface.__name__]
 	
 	class IDataGridUI(object):
-		__metaclass__ = registry_meta()
+		__metaclass__ = get_registry()
 		provides_ui = None
 		def display_my_data(self, data):
 			pass
@@ -328,7 +337,8 @@ python:
 			#some template code
 
 	# в файле build_ui.py
-	from plugin_api import get_all_childs
+	from plugin_api import get_all_implementations
+
 	print get_all_implementations(IDataGridUI) 
 			# [..., QtDataDisplayer, HTMLDataDisplayer, ....]
 	
@@ -678,7 +688,7 @@ python:
 документирования всей нетривиальной функциональности, реализованной с их 
 помощью.
 
-Ссылки:
+linklist:
 	http://www.python.org/download/releases/2.2/descrintro/
 	http://gnosis.cx/publish/programming/metaclass_1.html
 	http://gnosis.cx/publish/programming/metaclass_2.html
@@ -688,3 +698,5 @@ python:
 	http://peak.telecommunity.com/PyProtocols.html
 	http://pypi.python.org/pypi/zope.interface/3.8.0
 	http://www.python.org/dev/peps/pep-0246/
+
+P.S. Спасибо всем за комментарии и правки.
