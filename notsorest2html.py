@@ -65,7 +65,7 @@ def classify_block(block):
         if typed_str.match(block):
             yield block.split(':', 1)
         elif block.startswith('* '):
-            yield LIST, [block[2:]]
+            yield LIST, [block[2:   ]]
         else:
             yield TEXT, block
     else: 
@@ -172,7 +172,7 @@ class NotSoRESTHandler(object):
     def get_result(self):
         return "".join(self.stream)
     
-    def process(self, tp, data):
+    def process(self, tp, data, style):
         getattr(self, 'on_' + tp, lambda x : None)(data)
 
 
@@ -272,7 +272,7 @@ class BlogspotHTMLProvider(NotSoRESTHandler):
         self.do_href("[koder-ua.blogspot.com]http://koder-ua.blogspot.com/.")
  
 
-def not_so_rest_to_html(text):
+def not_so_rest_to_html(text, styles):
     formatter = BlogspotHTMLProvider()
 
     text = text.replace('\t', ' ' * 4)
@@ -281,15 +281,79 @@ def not_so_rest_to_html(text):
 
     for block_data in find_blocks(text):
         for block_type, btext in classify_block(block_data):
-            formatter.process(block_type, btext)
+
+            if block_type in styles:
+                block_type, style = styles[block_type]
+            else:
+                style = None
+
+            formatter.process(block_type, btext, style)
     
     formatter.write_footer()
     return formatter.get_result()
 
-def main():
-    fc = open(sys.argv[1]).read().decode('utf8')
-    res = not_so_rest_to_html(fc)
-    res_fname = os.path.splitext(sys.argv[1])[0] + '.html'
+style_cmd_re = re.compile(r"(?P<new_style>[-a-zA-Z0-9_]*)\s*=\s*(?P<old_style>[-a-zA-Z0-9_]*)\s*\[(?P<opts>.*)\]\s*(?:#.*)?$")
+
+def parse_style_file(fname):
+    res = {}
+    for lnum, line in enumerate(open(fname).readlines()):
+        line = line.strip()
+
+        if line.startswith('#'):
+            continue
+        
+        mres = style_cmd_re.match(line)
+        if not mres:
+            raise RuntimeError("Error in style file {0!r} in line {1}".format(fname, lnum))
+        
+        opts = {}
+        for opt in mres.group('opts').split(','):
+            opt = opt.strip()
+            name, val = opt.split('=', 1)
+            opts[name] = val
+        
+        res[mres.group('new_style')] = (mres.group('old_style'), opts)
+    return res
+
+
+def main(argv=None):
+    import optparse
+
+    argv = argv or sys.argv
+    
+    parser = optparse.OptionParser()
+
+    parser.add_option("-s", "--style-files", dest='style_files', default='')
+    parser.add_option("-o", "--output-file", dest='output_file', default=None)
+    parser.add_option("-f", "--format", dest='format', default='html')
+    
+    opts, files = parser.parse_args(argv)
+
+    if len(files) < 2:
+        print "Error - no template files"
+
+    if len(files) > 2:
+        print "Error - only one template file per call allowed"
+    
+    fname = files[0]
+    fc = open(fname).read().decode('utf8')
+    
+    styles = {}
+    # {new_style : (old_style, {param:val})}
+    if opts.style_files != '':
+        for style_fname in opts.style_files.split(':'):
+            styles.update(parse_style_file(style_fname))
+
+    if opts.format == 'html':
+        res = not_so_rest_to_html(fc, styles)
+    else:
+        print "Unknown format " + repr(opts.format)
+    
+    if opts.output_file is None:
+        res_fname = os.path.splitext(fname)[0] + '.html'
+    else:
+        res_fname = opts.output_file
+
     open(res_fname, "w").write(res.encode("utf8"))
 
 if __name__ == "__main__":
