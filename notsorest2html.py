@@ -55,9 +55,12 @@ HEADER1 = 'header1'
 HEADER2 = 'header2'
 TEXT = 'text'
 LIST = 'list'
+CUT = 'cut'
 
 typed_block = re.compile("([-a-zA-Z_]+):$")
 typed_str = re.compile("[-a-zA-Z_]+:.*$")
+cut_re = re.compile(r"<---+>$")
+
 
 def classify_block(block):
     block = block.lstrip()
@@ -66,6 +69,8 @@ def classify_block(block):
             yield block.split(':', 1)
         elif block.startswith('* '):
             yield LIST, [block[2:   ]]
+        elif cut_re.match(block):
+            yield CUT, None
         else:
             yield TEXT, block
     else: 
@@ -173,13 +178,26 @@ class NotSoRESTHandler(object):
         return "".join(self.stream)
     
     def process(self, tp, data, style):
+
+        if style is not None:
+            self.start_style(style)
+
         getattr(self, 'on_' + tp, lambda x : None)(data)
+
+        if style is not None:
+            self.end_style(style)
 
 
 class BlogspotHTMLProvider(NotSoRESTHandler):
     def __init__(self):
         self.refs = []
         super(BlogspotHTMLProvider, self).__init__()
+
+    def start_style(self, style):
+        self.write('<span style="{0}">'.format(style))
+    
+    def end_style(self, style):
+        self.write('</span>')
 
     def on_text(self, block, no_para=False):
         if block != "":
@@ -191,13 +209,16 @@ class BlogspotHTMLProvider(NotSoRESTHandler):
             if not no_para:
                 self.write("</p>")
     
+    def on_cut(self, block):
+        self.write("<!--more-->")
+
     def on_raw(self, block):
-        self.write('<pre><font face="courier" size="">' + 
+        self.write('<pre><font face="courier">' + 
                     escape_html(block, esc_all=True) + 
                         '</font></pre>')
 
     def on_traceback(self, block):
-        self.write('<pre><font face="courier" size="">' + 
+        self.write('<pre><font face="courier">' + 
                     escape_html(block, esc_all=True) + 
                         '</font></pre>')
 
@@ -306,13 +327,7 @@ def parse_style_file(fname):
         if not mres:
             raise RuntimeError("Error in style file {0!r} in line {1}".format(fname, lnum))
         
-        opts = {}
-        for opt in mres.group('opts').split(','):
-            opt = opt.strip()
-            name, val = opt.split('=', 1)
-            opts[name] = val
-        
-        res[mres.group('new_style')] = (mres.group('old_style'), opts)
+        res[mres.group('new_style')] = (mres.group('old_style'), mres.group('opts'))
     return res
 
 
@@ -323,7 +338,7 @@ def main(argv=None):
     
     parser = optparse.OptionParser()
 
-    parser.add_option("-s", "--style-files", dest='style_files', default='')
+    parser.add_option("-s", "--style-files", dest='style_files', default='notsores_styles.txt')
     parser.add_option("-o", "--output-file", dest='output_file', default=None)
     parser.add_option("-f", "--format", dest='format', default='html')
     
@@ -335,14 +350,20 @@ def main(argv=None):
     if len(files) > 2:
         print "Error - only one template file per call allowed"
     
-    fname = files[0]
+    fname = files[1]
     fc = open(fname).read().decode('utf8')
     
     styles = {}
-    # {new_style : (old_style, {param:val})}
+
+    # {new_style : (old_style, css)}
+
     if opts.style_files != '':
         for style_fname in opts.style_files.split(':'):
             styles.update(parse_style_file(style_fname))
+
+    import pprint
+
+    pprint.pprint(styles)
 
     if opts.format == 'html':
         res = not_so_rest_to_html(fc, styles)

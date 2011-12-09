@@ -1,3 +1,2 @@
-Raw = raw[font.size=+1]
-bold_raw = raw[bold]
-bold_Raw = raw[bold, font.size=+1]
+Raw = raw[font-size:120%]
+RAW = raw[font-size:140%]
