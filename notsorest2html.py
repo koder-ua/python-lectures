@@ -161,6 +161,9 @@ class BlogspotHTMLProvider(NotSoRESTHandler):
         self.write_raw("</ul>")
     
     def on_linklist(self, block):
+        self.on_text(u"Ссылки:", no_para=True)
+        self.write_raw("<br>")
+
         for line in block.split('\n'):
             line = line.strip()
             
@@ -178,12 +181,12 @@ class BlogspotHTMLProvider(NotSoRESTHandler):
             else:
                 raise ValueError("Can't process linklist item {0!r}".format(line))
             
-            self.write_raw('<p style="text-indent:20px"><a name="{0}">'.format(
+            self.write_raw('&nbsp;' * 10 + '<a name="{0}"><br>'.format(
                     escape_html(name.replace(' ', '_'))))
 
             self.do_href(url)
 
-            self.write_raw('</a></p>')
+            self.write_raw('</a>')
 
     def process_backref(self, ref_descr):
         gr1 = ref_descr.group(1)
