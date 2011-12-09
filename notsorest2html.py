@@ -153,9 +153,13 @@ def escape_html(text, esc_all=False):
 
 
 #re_italic = re.compile(r"(?ims)'(.*?)'")
-re_bold = re.compile(r"(?ims)'(.*?)'")
+re_bold = re.compile(r"(?ims)'(?=[^\s])(.+?)(?<=[^\s])'")
+re_it = re.compile(r"(?ims)\*(?=[^\s])(.+?)(?<=[^\s])\*")
+re_striked = re.compile(r"(?ims)-(?=[^\s])(.+?)(?<=[^\s])-")
+
 re_autor = re.compile("(?ims)^:Author:.*?$")
 re_href = re.compile(r"(?P<name>\[.*?\])?(?P<proto>https?://)(?P<url>.*?)(?=\s|$)")
+re_backref = re.compile(r"\[\s*([- _a-zA-Z]+)\s*\]")
 
 class NotSoRESTHandler(object):
     def __init__(self):
@@ -227,6 +231,11 @@ class BlogspotHTMLProvider(NotSoRESTHandler):
 
     def do_href(self, ref_descr):        
         self.write(self.process_href(re_href.match(ref_descr))) 
+    
+    def process_backref(self, ref_descr):
+        gr1 = ref_descr.group(1)
+        return '<a href="#{0}">{1}</a>'.format(
+                    self.escape_html(gr1.replace(' ', '_'), gr1))
                
     def on_list(self, items):
         self.write("<ul>")
@@ -241,6 +250,28 @@ class BlogspotHTMLProvider(NotSoRESTHandler):
     def on_header2(self, block):
         self.write(u"<br><h4>{0}</h4>".format(self.escape_html(block)) + '\n')
     
+    def on_linklist(self, block):
+        for line in block.split('\n'):
+            line = line.strip()
+            
+            if line == "":
+                continue
+
+            if 'http://' in line:
+                name, url = line.split('http://', 1)
+                name = name.strip()
+                url = "http://" + url
+            elif 'https://' in line:
+                name, url = line.split('https://', 1)
+                name = name.strip()
+                url = "https://" + url
+            else:
+                raise ValueError("Can't process linklist item {0!r}".format(line))
+            
+            self.write('<p style="text-indent:20px"><a name="{0}">'.format(name.replace(' ', '_')))
+            self.do_href(url)
+            self.write('</a></p>')
+
     def process_href(self, mobj):
         g1 = mobj.group('proto')
         g2 = mobj.group('url')
@@ -267,6 +298,7 @@ class BlogspotHTMLProvider(NotSoRESTHandler):
     def escape_html(self, text):
         ntext = escape_html(text)
         ntext = re_bold.sub(ur"<b>\1</b>", ntext)
+        ntext = re_backref.sub(self.process_backref, ntext)
         return re_href.sub(self.process_href, ntext)
     
     def write_footer(self):
@@ -339,7 +371,7 @@ def main(argv=None):
     if len(files) > 2:
         print "Error - only one template file per call allowed"
     
-    fname = files[0]
+    fname = files[1]
     fc = open(fname).read().decode('utf8')
     
     styles = {}
