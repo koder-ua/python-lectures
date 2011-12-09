@@ -5,7 +5,12 @@ import re
 import sys
 
 from pygments import highlight
-from pygments.lexers import PythonLexer, CLexer
+from pygments.lexers import PythonLexer, \
+                            CLexer, \
+                            XmlLexer, \
+                            PythonTracebackLexer, \
+                            PythonConsoleLexer
+
 from pygments.formatters import HtmlFormatter
 
 def indent_level(line):
@@ -146,16 +151,6 @@ def escape_html(text, esc_all=False):
     
     return "".join( html_escape_table.get(c, c) for c in text)
 
-def highlight_python(code):
-    return highlight(code, 
-                    PythonLexer(), 
-                    HtmlFormatter(noclasses=True))
-
-
-def highlight_c(code):
-    return highlight(code, 
-                    CLexer(), 
-                    HtmlFormatter(noclasses=True))
 
 #re_italic = re.compile(r"(?ims)'(.*?)'")
 re_bold = re.compile(r"(?ims)'(.*?)'")
@@ -196,14 +191,26 @@ class BlogspotHTMLProvider(NotSoRESTHandler):
                     escape_html(block, esc_all=True) + 
                         '</font></pre>')
 
-    def on_traceback(self, block):
-        self.write('<pre><font face="courier" size="">' + 
-                    escape_html(block, esc_all=True) + 
-                        '</font></pre>')
+    highlighters_map = {}
+    highlighters_map['python'] = PythonLexer
+    highlighters_map['c'] = CLexer
+    highlighters_map['xml'] = XmlLexer
+    highlighters_map['traceback'] = PythonTracebackLexer
+    highlighters_map['pyconsole'] = PythonConsoleLexer
 
-    def on_python(self, block):
-        self.write(highlight_python(deindent_snippet(block)).strip())
-    
+    def getattr(self, name):
+        # handle all syntax hightlited blocks
+        if name.startswith('on_'):
+            block = name[3:]
+            if block in self.highlighters_map:
+                lexer = self.highlighters_map[block]
+                def hliter(code):
+                    code = deindent_snippet(code)
+                    hblock = highlight(code, lexer, HtmlFormatter(noclasses=True))
+                    self.write(code.strip())
+                return hliter
+        raise AttributeError("type %r has no attribute %s" % (self.__class__, name))
+                
     def on_img(self, url):
         url = url.strip()
         if url.endswith('svg'):
@@ -218,7 +225,7 @@ class BlogspotHTMLProvider(NotSoRESTHandler):
             self.do_href(line)
             self.write("<br>")
 
-    def do_href(self, ref_descr):
+    def do_href(self, ref_descr):        
         self.write(self.process_href(re_href.match(ref_descr))) 
                
     def on_list(self, items):
@@ -227,9 +234,6 @@ class BlogspotHTMLProvider(NotSoRESTHandler):
             self.write("<li>")
             self.on_text(item, no_para=True)
         self.write("</ul>")
-
-    def on_c(self, block):
-        self.write(highlight_c(deindent_snippet(block)).strip())
 
     def on_header1(self, block):
         self.write(u"<br><h3>{0}</h3>".format(self.escape_html(block)) + '\n')
