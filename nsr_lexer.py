@@ -14,6 +14,20 @@ BLOCK_SLINE = 'block_sline'
 LIST_ITEM_BEGIN = 'list_item'
 EMPTY_LINE = 'empty_line'
 
+def debug_prn(block_tp, block):
+	print
+	if isinstance(block, basestring):
+		print block_tp 
+		print
+		print block.encode('utf8')
+	else:
+		print block_tp 
+		print
+		print repr(block)
+	print
+	print '~' * 50
+
+
 def lex(fc):
 	fc = fc.replace('\t', ' ' * 4)
 	in_block = False
@@ -108,6 +122,8 @@ def _parse(fc):
 
 	for line_tp, data in lex(fc):
 		
+		#debug_prn(line_tp, data)
+
 		if in_block:
 			if line_tp == DEINDENT:
 				# fix for next problem
@@ -117,7 +133,7 @@ def _parse(fc):
 				#     New text begin here with para
 				# we should do......
 
-				if cblock[-1] != '':
+				if len(cblock) >= 3 and cblock[-1] != '' and cblock[-2] == '':
 					not_a_block_line = cblock[-1]
 					cblock = cblock[:-1]
 				else:
@@ -179,10 +195,12 @@ OUTPUT_TYPES = \
 		TEXT_H4,
 		CUT
 	]
+
 def parse(fc):
 	list_items = []
 
 	for block_tp, block in _parse(fc):
+		
 		if len(list_items) != 0 and LIST_ITEM != block_tp:
 			yield LIST, list_items
 			list_items = []

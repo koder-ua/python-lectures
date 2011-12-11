@@ -36,9 +36,19 @@ def escape_html(text, esc_all=False):
     return "".join( html_escape_table.get(c, c) for c in text)
 
 
-re_bold    = re.compile(r"(?i)'\b(.+?)\b'")
-re_it      = re.compile(r"(?i)\*\b(.+?)\b\*")
-re_striked = re.compile(r"(?i)-\b(.+?)\b-")
+re_bold1    = re.compile(r"(?i)(?<=\W)'\b(.+?)\b'(?=\W|$)")
+re_it1      = re.compile(r"(?i)(?<=\W)\*\b(.+?)\b\*(?=\W|$)")
+re_striked1 = re.compile(r"(?i)(?<=\W)-\b(.+?)\b-(?=\W|$)")
+
+re_bold2    = re.compile(r"(?i)^'\b(.+?)\b'(?=\W|$)")
+re_it2      = re.compile(r"(?i)^\*\b(.+?)\b\*(?=\W|$)")
+re_striked2 = re.compile(r"(?i)^-\b(.+?)\b-(?=\W|$)")
+
+assert not re_striked1.search('a-b-c')
+assert not re_striked1.search('a-b-')
+assert re_striked2.match('-b-')
+assert re_striked1.search(' -b-')
+assert re_striked1.search(' -b- ')
 
 re_backref = re.compile(r"\[\s*([- _a-zA-Z]+)\s*\]")
 re_href = re.compile(r"(?P<name>\[\s*([- _a-zA-Z/.]+)\s*\])?(?P<proto>https?://)(?P<url>.*?)(?=\s|$)")
@@ -76,9 +86,12 @@ class BlogspotHTMLProvider(NotSoRESTHandler):
         
         ntext = escape_html(text)
         
-        ntext = re_bold.sub(r"<b>\1</b>", ntext)
-        ntext = re_it.sub(r"<i>\1</i>", ntext)
-        ntext = re_striked.sub(r"<s>\1</s>", ntext)
+        ntext = re_bold1.sub(r"<b>\1</b>", ntext)
+        ntext = re_it1.sub(r"<i>\1</i>", ntext)
+        ntext = re_striked1.sub(r"<s>\1</s>", ntext)
+        ntext = re_bold2.sub(r"<b>\1</b>", ntext)
+        ntext = re_it2.sub(r"<i>\1</i>", ntext)
+        ntext = re_striked2.sub(r"<s>\1</s>", ntext)
         ntext = re_backref.sub(self.process_backref, ntext)
         ntext = re_href.sub(self.process_href, ntext)
 
@@ -154,6 +167,7 @@ class BlogspotHTMLProvider(NotSoRESTHandler):
                 re_href.match(ref_descr))) 
     
     def on_list(self, items):
+        
         self.write_raw("<ul>")
         for item in items:
             self.write_raw("<li>")
@@ -181,18 +195,23 @@ class BlogspotHTMLProvider(NotSoRESTHandler):
             else:
                 raise ValueError("Can't process linklist item {0!r}".format(line))
             
-            self.write_raw('&nbsp;' * 10 + '<a name="{0}"><br>'.format(
+            self.write_raw('&nbsp;' * 10)
+            if name:
+                self.write_raw('<a name="{0}">'.format(
                     escape_html(name.replace(' ', '_'))))
 
             self.do_href(url)
 
-            self.write_raw('</a>')
+            if name:
+                self.write_raw('</a>')
+            
+            self.write_raw('<br>')
 
     def process_backref(self, ref_descr):
         gr1 = ref_descr.group(1)
         return '<a href="#{0}">{1}</a>'.format(
-                    escape_html(gr1.replace(' ', '_'), 
-                    escape_html(gr1)))
+                    escape_html(gr1.replace(' ', '_')), 
+                    escape_html(gr1))
                
     def process_href(self, mobj):
         name = mobj.group('name')
@@ -244,6 +263,8 @@ def not_so_rest_to_xxx(text, styles, formatter):
 
     for block_type, data in parse(text):
         
+        #debug_block(block_type, data)
+
         if block_type in styles:
              block_type, style = styles[block_type]
         else:
