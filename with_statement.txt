@@ -1,0 +1,502 @@
+=============
+Оператор with
+=============
+	
+Теория
+======
+
+	Оператор [with] появился в python 2.5, но, 
+не смотря на это, используется до сих пор недостаточно широко. Являясь 
+упрощенной версией анонимных блоков кода 'with' позволяет:
+
+* исполнить код до начала блока
+* исполнить код по выходу из блока, независимо от того это выход по исключению
+  с помощью 'return' или другим способом
+* обработать исключение, возникшее в блоке.
+
+Синтаксически 'with' выглядит следующим образом:
+
+python:
+	with operation:
+		code	
+	 
+	'operation' может быть объектом, выражением или конструкцией вида 
+'expression as var'. Как и много других конструкций он является синтаксическим 
+сахаром для более громоздкого выражения:
+
+<------------------------------------------------------------------------------>
+
+python:
+	with operation as var:
+		code
+
+=>
+
+python:
+	_obj = operation
+
+	# вход в блок
+	var = _obj.__enter__()
+
+	try:
+		code
+	except Exception as exc:
+		# если произошло исключение - передаем его управляющему объекту
+		if not _obj.__exit__(*sys.exception_info()):
+			# если он вернул False(None) возбуждаем его
+			raise
+		# если True - подавляем исключение
+	else:
+		# если не было исключения - передаем None * 3
+		_obj.__exit__(None, None, None)
+	
+	Более подробно с 'with' можно ознакомиться в соответствующем [PEP-343].
+'with' управляется объектом, называемым менеджером контекста (МК) - '_obj' в 
+примере выше. Есть два основных способа написания МК - класс с методами 
+'__enter__' и '__exit__' и генератор:
+
+python:
+	# Это только пример.
+	# Использование такого кода для генерации временных файлов
+	# небезопасно. Используйте функции 'os.tmpfile'.
+	 
+	class TempoFileCreator(object):
+		def __init__(self):
+			self.fname = None
+			self.fd = None
+
+		def __inter__(self):
+			# вызывается по входу в блок
+			self.fname = os.tmpnam()
+			self.fd = open(self.fname, "w+")
+			return self.fname, self.fd
+		
+		def __exit__(self, exc_type, exc_val, traceback):
+			# вызывается по выходу из блока
+			# если в блоке выброшено исключение, то
+			# его тип, значение и трейс будут переданы в параметрах
+
+			self.fd.close()
+			os.unlink(self.fname)
+			self.fd = None
+			self.fname = None
+
+			# здесь написано return None => исключение не будет подавляться 
+	
+	from contextlib import contextmanager
+
+	@contextmanager
+	def tempo_file():
+		# полностью равноценно классу TempoFileCreator
+		fname = os.tmpnam()
+		fd = open(self.fname, "w+")
+		try:
+			yield fname, fd
+			#сейчас исполняется блок
+		finally:
+			# это наш __exit__
+			fd.close()
+			os.unlink(fd)
+
+Использование:
+
+python:
+	with tempo_file() as (fname, fd):
+		# читаем-пишем в файл
+		# по выходу из блока он будет удален
+
+	Ядро python реализует только первый вариант для контекст менеджера,
+второй реализуется в 'contextlib.contextmanager'.
+
+	В том случае если во внутреннем блоке кода есть оператор 'yield', т.е. мы 
+работаем в генераторе, '__exit__' будет вызван по выходу из генератора
+или по его удалению. Таким образом если ссылку на генератор сохранить, 
+то '__exit__' не будет вызван до тех пор, пока ссылка будет существовать:
+
+python:
+	@contextmanager
+	def cmanager():
+		yield
+		print "Exit"
+	
+	def some_func():
+		with cmanager():
+			yield 1
+	
+	it = some_func()
+	for val in it:
+		pass
+	# Exit напечатается здесь
+
+	it = some_func()
+	.....
+	del it # или по выходу из текущего блока
+	# Exit напечатается здесь
+
+	Подводя итоги - 'with' позволяет сэкономить 2-4 строки кода на каждое 
+использование и повышает читаемость программы, меньше отвлекая нас от логики 
+деталями реализации. 
+
+Практика
+========
+
+	Начнем с примеров, которые встречаются в стандартной библиотеке и будем
+постепенно переходить к менее распространенным вариантам использования.
+
+* Открытие/создание объекта по входу в блок - закрытие/удаление по выходу:
+
+python:
+	with open('/tmp/tt.txt') as fd:
+		.....
+		# здесь файл закрывается
+	# переменная fd доступна, но файл уже закрыт
+	# <closed file '/tmp/tt.txt', mode 'r' at 0x1beeed0>
+
+	Чаще всего в python программах не закрывают файл вручную, обоснованно 
+полагаясь на подсчет ссылок. Блоки 'with' кроме явного указания области, где 
+файл открыт имеют еще одно небольшое преимущество, связанное с особенностями 
+обработки исключений:
+
+python:
+	def i_am_not_always_close_files():
+		fd = open(fname)
+		.....
+	
+	i_am_not_always_close_files()
+	# в этой точке файл уже закрыт 
+
+	Если внутри фцнкции 'i_am_not_always_close_files' будет
+возбуждено исключение, то файл не закроется до того момента, пока оно не будет
+обработано:
+
+python:
+	def i_am_not_always_close_files():
+		fd = open(fname)
+		raise RuntimeError('')
+	
+	try:
+		i_am_not_always_close_files()
+	except RuntimeError:
+		#тут файл еще открыт
+		traceback = sys.exc_info()[2]
+
+		# спуск на один кадр стека глубже
+		# 'fd' в его локальных переменных
+		print traceback.tb_next.tb_frame.f_locals['fd']
+
+		# <open file '/tmp/tt.txt', mode 'r' at 0x1d31030>
+		
+	# в этой точке файл уже закрыт
+	
+	Дело в том, что пока жив объект-исключение он хранит путь исключения со 
+всеми кадрами стека. При использовании 'with' файл закрывается по выходу блока
+кода, обрамляемого в 'with', так что в обработчике исключения файл был бы уже 
+закрыт. Впрочем это обычно не существенное различие.
+
+	Еще пример:
+
+python:
+	# создадим виртуальную машину
+	with create_virtual_machine(root_passwd) as vm_ip:
+		# выполним на ней тестирования скрипта автоматической установки
+		test_auto_deploy_script(vm_ip, root_passwd)
+	# по выходу уничтожим vm_ip
+
+
+* Захват/освобождение объекта
+
+	Эту семантику поддерживают все стандартные объекты синхронизации
+
+python:
+
+	import threading
+	lock = Threading.Lock()
+
+	with lock:
+		# блокровка захваченна
+		some code
+	# блокировка отпущенна
+
+* Временное изменение настроек (примеры из документации python)
+
+python:
+	import warnings
+	with warnings.catch_warnings():
+	    # в этом участке кода все предепреждения игнорируются
+
+	from decimal import localcontext
+	with localcontext() as ctx:
+	    ctx.prec = 42   # расчеты с типом Decimal выполняются с 
+	    			    # заоблачной точностью
+	    s = calculate_something()
+
+
+* Смена текущей директории (пример использования библиотеки [fabric])
+
+python:
+	from fabric.context_managers import lcd
+	
+	os.chdir('/opt')
+	print os.getcwd() # => /opt
+
+	with lcd('/tmp'):
+		print os.getcwd() # => /tmp
+	
+	print os.getcwd() # => /opt
+
+
+	Нужно помнить, что изменение таким образом глобальных настроек в 
+многопоточной программе может доставить много веселых минут при отладке. 
+
+* Подмена/восстановление объекта (временный [monkey patching], пример 
+	использования библиотеки [mock])
+	
+python:
+	import mock
+
+	my_mock = mock.MagicMock()
+	with mock.patch('__builtin__.open', my_mock):
+		# open подменена на mock.MagicMock
+		with open('foo') as h:
+			pass
+
+* Транзакции баз данных....
+	
+Менеджер транзакций для [sqlalchemy]
+
+python:
+	from config import DB_URI
+	from db_session import get_session
+
+	class DBWrapper(object):
+
+	    def __init__(self):
+	        self.session = None
+
+	    def __enter__(self):
+            self.session = get_session(DB_URI)
+
+	    def __exit__(self, exc, *args):
+			# при выходе из 'with':
+            if exc is None:
+				# если все прошло успешно коммитим 
+				# транзакцию и закрываем курсор
+                self.session.commit()
+
+            # если было исключение - откатываем
+            self.session.close()
+
+        # тут методы, скрывающие работу с базой
+
+	with DBWrapper() as dbw: # открываем транзакцию
+		dbw.get_some_data()
+		dbw.update_some_data("...")
+
+
+* ....и не только баз данных
+
+python:
+	from threading import local
+	import subprocess
+
+	# обобщенная транзакция - выполняет набор обратных действий
+	# при возникновении в блоке 'with' не обработанного исключения
+
+	class Transaction(object):
+	    def __init__(self, parent):    
+	        self.rollback_cmds = []
+	        self.set_parent(parent)
+	       
+	    def set_parent(self, parent): 
+	    	# родительская транзакция
+	    	# если откатывается родительская транзакция, то она автоматом
+	    	# откатывает и дочерние, даже если они было уже успешно закрыты
+	    	# если откатывается дочерняя, то родительская может продолжить
+	    	# исполнение, если код выше по стеку обработает исключение
+
+	        if parent is not None:
+	            self.parent_add = parent.add
+	        else:
+	            self.parent_add = lambda *cmd : None
+
+	    def __enter__(self):
+	    	return self	    	
+	    	
+	    def __exit__(self, exc, *dt):
+	        if exc is None:
+	            self.commit()
+	        else:
+	            self.rollback()
+
+	    def add(self, cmd):
+	        self.parent_add(cmd)
+	        self.transaction.append(cmd)
+
+	    def commit(self):
+	        self.transaction = []
+
+	    def rollback(self):
+	        for cmd in reversed(self.transaction):
+	        	isinstance(cmd, basestring)
+	            	subprocess.check_call(cmd, shell=True)
+	            else:
+	        		cmd[0](*cmd[1:])
+
+
+	class AutoInheritedTransaction(object)
+		# словарь, id потока => [список вложенных транзакций]
+		# позволяет автоматически находить родительскую транзакцию
+		# в том случае, если для каждого потока может быть не более
+		# одной цепи вложенных транзакций 
+
+		transactions = local()
+
+		def __init__(self):
+			super(AutoInheritedTransaction, self).__init__(self.current())
+			self.register()
+
+		def register(self):
+			self.transaction.list = getattr(self.transaction, 'list') + [self]
+
+	    @classmethod
+	    def current(cls):
+	    	return getattr(self.transaction, 'list', [None])[-1]
+	
+	used_loop_devs = []
+	....
+	with AutoInheritedTransaction() as tr:
+		# создаем loop устройство
+		loop_name = subprocess.check_output("losetup -f --show /tmp/fs_image")
+		# вызов для его удаления
+		tr.add("losetup -d " + loop_name)
+		
+		# записываем новое устройство в массив
+		used_loop_devs.append(loop_name)
+		tr.add(lambda : used_loop_devs.remove(
+							used_loop_devs.index(
+								loop_name)))
+		
+		# монтируем его
+		subprocess.check_output("mount {0} /mnt/some_dir")
+		tr.add("umount /mnt/some_dir")
+
+		some_code
+	
+	Эта модель программирования позволяет группировать в одной точке код прямой 
+и обратной операции и избавляет от вложенных 'try'/'finally'. Также 'with' 
+предоставляет естественный интерфейс для [STM]. [cpython-withatomic] - один из 
+вариантов STM для руthon с поддержкой 'with'.
+
+* Подавление исключений
+
+python:
+	def supress(*ex_types):
+		# стоит добавить логирования подавляемого исключения
+		try:
+			yield
+		except Exception as x:
+			if not isinstance(x, ex_types):
+				raise
+
+	with supress(OSError):
+		os.unlink("some_file")
+	
+
+* Генерация XML/HTML других структурированных языков.
+
+
+python:
+
+	from xmlbuilder import XMLBuilder
+
+	# новый xml документ
+
+	x = XMLBuilder('root')
+	x.some_tag
+	x.some_tag_with_data('text', a='12')
+
+	# вложенные теги
+	with x.some_tree(a='1'):
+	    with x.data:
+	        x.mmm
+	        x.node(val='11')
+
+	print str(x) # <= string object
+
+
+Получим в итоге: 
+
+xml:
+	<?xml version="1.0" encoding="utf-8" ?>
+	<root>
+	    <some_tag />
+	    <some_tag_with_data a="12">text</some_tag_with_data>
+	    <some_tree a="1">
+	        <data>
+	            <mmm />
+	            <node val="11" />
+	        </data>
+	    </some_tree>
+	</root>
+
+Код библиотеки находится на [xmlbuilder].
+
+* Трассировка блока в логере (установка 'sys.settrace')
+
+python:
+	import sys
+	import contextlib
+
+	def on_event(fr, evt, data):
+		print fr, evt, data
+		return on_event
+
+	@contextlib.contextmanager
+	def trace_me():
+
+		prev_trace = sys.gettrace()
+		sys.settrace(on_event)
+		try:
+			yield
+		finally:
+			sys.settrace(prev_trace)
+			print "after finally"
+
+
+	with trace_me():
+		print "in with"
+		x = 1
+		y = 2
+		print "before gettrace"
+		sys.gettrace()
+		print "after gettrace"
+
+Этот код напечатает:
+
+raw:
+	in with
+	before gettrace
+	after gettrace
+	<frame object at 0x19534f0> call None
+	<frame object at 0x19534f0> line None
+	<frame object at 0x19534f0> line None
+	<frame object at 0x19534f0> line None
+	<frame object at 0x1943ae0> call None
+	<frame object at 0x1943ae0> line None
+	after finally
+
+Для лучшего понимания трассировки питона - [python-aware-python].
+
+
+linklist:
+
+	PEP-0343 http://www.python.org/dev/peps/pep-0343/
+	with http://docs.python.org/reference/compound_stmts.html#the-with-statement
+	xmlbuilder https://github.com/koder-ua/megarepo/tree/master/xmlbuilder/xmlbuilder
+	mock http://www.voidspace.org.uk/python/mock/compare.html#mocking-a-context-manager
+	monkey patching http://en.wikipedia.org/wiki/Monkey_patch
+	sqlalchemy http://www.sqlalchemy.org/
+	fabric http://fabfile.org
+	STM http://en.wikipedia.org/wiki/Software_Transaction_Memory
+	cpython-withatomic https://bitbucket.org/arigo/cpython-withatomic
+	python-aware-python http://blip.tv/pycon-us-videos-2009-2010-2011/pycon-2011-python-aware-python-4896752
