@@ -1,0 +1,260 @@
+===============================================
+Интерфейсы в python или "Предъявите документы!"
+===============================================
+
+	Люди с опытом программирования на C#/Java/C++ начиная писать на python
+часто интересуются как обстоят дела с [интерфейс|интерфейсами] в python.
+Надеюсь остальные тоже найдут тут интересное для себя.
+
+	В компилируемых языках используется модель интерфейсов основанная на статическом 
+декларировании.
+Для реализации интерфейса класс должен унаследовать интерфейс или другим способом
+сообщить компилятору о его реализации - без этого генерация эффективного бинарного
+кода невозможна. Cтатическая типизация позволяет перенести на этап компиляции 
+проверку и преобразование типов интерфейсов а также проверку того, что класс реализует
+декларируемый интерфейс.
+
+<------------------------------------------------------------------------------->
+
+	В динамических языках все обстоит по другому. Во-первых на этапе компиляции 
+типы не известны, во-вторых нет необходимости иметь детальную информацию о типе
+для генерации байтокода. Здесь используется [утиная типизация] : 
+если функция использует параметр 'out_file' что-бы писать в него 
+данные вызывая 
+
+python:
+	out_file.write("some_text")
+
+то любой объект у которого есть 
+метод 'write' принимающий строку ей сойдет. Набор методов и полей, необходимых для 
+использования объекта в некоторой роли называется протоколом - в документации по python
+описаны протоколы для всех основных типов (Например - [протокол для чисел]).
+
+	По итогу интерфейс и протокол это продолжение идей статической и динамической 
+типизации. Если интерфейс достается объекту в наследство (декларативно, проверяемо 
+на этапе компиляции), то реализация протокола не предполагает декларации, а только 
+реализацию. Интересный вариант - шаблоны в C++. Фактически они используют
+утиную типизацию и протоколы. Если бы в С++ еще удалось реализовать интроспекцию этапа 
+компиляции.... Но это я размечтался.
+	
+	Две главные библиотеки интерфейсов/протоколов в python это [zope.interface] и 
+[PyProtocols] (наследник интерфейсов [PEAK]). Рассмотрим их подробнее.
+
+	У 'zope.interface' есть хорошая русская документация [z.i.ru] которую нет
+смысла пересказывать, так что пробежимся по нему быстро, одним примером:
+
+python:
+	import zope.interface
+
+	# Декларируем интерфейс. Как легко догадаться тут немножко
+	# черной магии метаклассов
+
+	class IFile(zope.interface.Interface):
+		mode = zope.interface.Attribute("open mode")	
+		def write(data):
+	       pass
+	
+	# Интерфейс поддерживает 'mapping' протокол для своих элементов
+	# немного более удобная интроспекция, чем через 'vars'/'__dict__'
+
+	print 'mode' in IFile # True
+	print IFile['mode']
+	print IFile['write']
+
+	IFile.mode # => AttributeError :) черная магия в действии
+
+	# реализуем интерфейс
+	class NoSQLFile(object):
+		zope.interface.implements(IFoo)
+
+		def __init__(self):
+	        self.mode = 'w'
+
+	    def write(self, data):
+	    	# Персистентность? Не, не слышал :)
+	    	# Декларирование интерфейса означает только что его можно будет 
+	    	# вызвать. Но не означает, что он сделает что-то адекватное
+	        pass
+	
+	# классы реализуют интерфейсы
+	print IFile.implementedBy(NoSQLFile) # True
+
+	# экземпляры классов их предоставляют 
+	print IFile.providedBy(NoSQLFile())  # True
+
+	# список всех реализуемых интерфейсов
+	list(zope.interface.implementedBy(NoSQLFile))
+
+	# можно обявлять реализацию/предоставление интерфейсов вне класса 
+	import StringIO
+	zope.interface.classImplements(StringIO.StringIO, IFile)
+
+	# адаптация
+	x = IFile('/tmp/some_data.txt') #TypeError
+	
+	def adapt_str_to_file(iface, fname):
+		if iface is IFile:
+			# тут бы стоило декларировать предоставление интерфейса
+			# но и так будет работать
+			return open(fname)
+	
+	zope.interface.interface.adapter_hooks.append(adapt_str_to_file)
+	x = IFile('/tmp/some_data.txt') # открыли файл
+
+Итого - 'zope.interface' позволяет:
+
+* Объявлять интерфейсы
+* Декларировать реализацию и предоставление интерфейса, как при создании класса
+  так и для уже созданных классов  (в т.ч. описанных в сторонних библиотеках)
+* Добавлять ограничения на объекты, предоставляющие интерфейс - [z.i.инварианты]
+* Адаптировать классы к интерфейсам, не заложенным в них мзначально. Возможности
+  адаптации заметно шире, чем показано в примере выше - см. 
+  [z.i.реестры_адаптеров]   
+ 
+	'zope.interface' имеет достаточно длинную историю развития и на сегодня это 
+основной пакет для интерфейс-ориентированного программирования на python. 
+Он используется в [zope] (и его наследнике - [grok]), [twisted], [pyramid], 
+и д.р. Ядро написано на C, так что со скоростью проблем быть не должно.
+
+	Теперь 'PyProtocols'. В отличии от 'zope.interface' главное в нем
+адаптация и интерфейсы предназначенны только для указания к чему адаптировать,
+но не предполагают наследование и явную реализацию. Другими словами если 
+'zope.interface' вносит элементы декларативного (a-la компилируемого) подхода, 
+то 'PyProtocols' полностью построен на идеях протоколов.
+
+python:
+	import types
+	import protocols
+	
+	# интерфейс
+	class IFile(protocols.Interface):
+		def write(data):
+	       pass
+
+	# адаптор - преобразует строку к IFile
+	class String2File(object):
+		protocols.advise(
+			provides = [IFile],
+			asAdapterForTypes = [types.StringType],
+		)
+
+		def __init__(self, fname):
+			self.fd = open(fname)
+		
+		def write(self, data):
+			self.fd.write(data)
+
+При этом 'PyProtocols' может использовать не только свои интерфейсы, но и 
+'zope.interfaces'.
+
+	Были также 'Twisted.interfaces', но 'twisted' позже перешел на использование 
+'zope.interfaces'.
+
+	Немного про адаптацию. Ее основная задача - связывать вместе 
+библиотеки которые не были написаны для совместной работы. Например
+функция 'select.select' требует что-бы передаваемые в нее объекты
+были или типа 'int' или имели метод 'fileno', возвращающий 'int'.
+Внутри это, очевидно, сделано примерно так:
+
+python:
+	def select(rfds, wfds, efds, tout=None):
+		real_fds = []
+		for fd in rfds:
+			if isinstance(fd, (int,long)):
+				real_fds = int(fd)
+			else:
+				real_fds = int(fd.fileno())
+		.......
+	
+Как могло бы выглядеть при использовании интерфейсов и адаптации('PyProtocols'):
+
+python:
+	import protocols
+	
+	# интерфейс
+	class ISelectable(Interface):
+		def fileno(data):
+	       pass
+
+	# адаптер int -> ISelectable
+	class SelectableInt(object):
+		protocols.advise(
+			provides = [ISelectable],
+			asAdapterForTypes = [types.IntType],
+		)
+
+		def __init__(self, fd_int):
+			self.fd_int = fd_int
+		
+		def fileno(self):
+			return self.fd_int
+		
+	def select(rfds, wfds, efds, tout=None):
+		real_fds = []
+		for fd in rfds:
+			adapted_iface = adapt(fd, ISelectable)
+			real_fds.append(adapted_iface.fileno())
+
+
+	На более сложных примерах адаптация не так сильно проигрывает по 
+количеству кода, но в любом случае мы меняем 
+'if' 'isintance'(...)/'elif' 'isintance'(...)/'elif' 'isintance'(...) на более
+гибкий код, при этом увеличивая его количество. Фактически первый вариант
+select имеет жестко закодированную внутри адаптацию ограниченного количества 
+типов, но выигрывает на отсутствии создания адаптирующего 
+класса. Один из вариантов критики первого подхода можно посмотреть тут:
+[Don't use isinstance]. Мне кажется что наиболее удачен был-бы подход с 
+некоторым количеством 'if/elif' для базовых типов и адаптацией для остальных.
+Адаптация также могла бы помочь c одной из врожденных проблем python - отсутствия 
+механизма перегрузки функций. Правда не похоже что при ей использовании 
+можно писать перегрузку так-же лаконично, как, например, на C++.  
+	
+	Ну это все было во времена динозавров, а как дела обстоят сейчас?
+С 2001 года были отклонены два PEP по внесению в python интерфейсов и адаптации
+([PEP-0246], [PEP-0245]), и в конце-концов был принят [PEP-3119] - 
+ о поддержке абстрактных базовых классов. Этот PEP стандартизует способ
+создания интерфейса и проверки реализации/предоставления интерфейса.
+Тепер что-бы проверить, что объект индексируется можно вместо
+
+python:
+	hasattr(x, "__getitem__") and hasattr(x, "__setitem__")
+
+написать
+
+python:
+	isinstance(x, MutableSequence)
+
+PEP реализован модулем [модуль abs] и добавлением методов 
+'__instancecheck__' и '__subclasscheck__',
+позволяющими перегружать 'isinstance' и 'issubclass'.
+Реализация адаптации оставлена на откуп сторонним библиотекам
+(которых пока не очень, а 'PyProtocols' давно не обновлялся).
+
+	Как видим попытки привнести в python систему интерфейсов и адаптации 
+делались неоднократно, но никакой существенной поддержки в языке и 
+библиотеках не получили (PEP-3119 фактически только расширяет isinstance). 
+С моей точки зрения  основная проблема в том, что повсеместное использование
+интерфейсов/адаптации лишает язык лаконичности и простоты. А мы любим python 
+за простоту и низкий порог вхождения - за простые в использовании и освоении
+библиотеки и часто не особо важно, какой длинны 'if/elif' там внутри.
+
+linklist:
+	утиная типизация http://www.voidspace.org.uk/python/articles/duck_typing.shtml
+	zope http://www.zope.org/
+	zope.interface http://pypi.python.org/pypi/zope.interface
+	zope.interface_doc1 http://www.muthukadan.net/docs/zca.html#interfaces
+	z.i.ru http://docs.zope.org/zope.interface/README.ru.html
+	z.i.инварианты http://docs.zope.org/zope.interface/README.ru.html#id16
+	z.i.реестры_адаптеров http://docs.zope.org/zope.interface/adapter.ru.html
+	twisted http://twistedmatrix.com/documents/current/core/howto/plugin.html
+	grok http://pypi.python.org/pypi/grok
+	pyramid http://docs.pylonsproject.org/projects/pyramid/en/1.2-branch/index.html
+	PyProtocols http://peak.telecommunity.com/PyProtocols.html
+	PEAK http://peak.telecommunity.com/Articles/WhatisPEAK.html 
+	Don't use isinstance http://www.canonical.org/~kragen/isinstance/
+	протокол для чисел http://docs.python.org/reference/datamodel.html#emulating-numeric-types		
+	PEP-0245 http://www.python.org/dev/peps/pep-0245/
+	PEP-0246 http://www.python.org/dev/peps/pep-0246/
+	PEP-3119 http://www.python.org/dev/peps/pep-3119/
+	модуль abs http://docs.python.org/library/abc.html
+	интерфейс http://ru.wikipedia.org/wiki/%D0%98%D0%BD%D1%82%D0%B5%D1%80%D1%84%D0%B5%D0%B9%D1%81_%28%D0%BE%D0%B1%D1%8A%D0%B5%D0%BA%D1%82%D0%BD%D0%BE-%D0%BE%D1%80%D0%B8%D0%B5%D0%BD%D1%82%D0%B8%D1%80%D0%BE%D0%B2%D0%B0%D0%BD%D0%BD%D0%BE%D0%B5_%D0%BF%D1%80%D0%BE%D0%B3%D1%80%D0%B0%D0%BC%D0%BC%D0%B8%D1%80%D0%BE%D0%B2%D0%B0%D0%BD%D0%B8%D0%B5%29

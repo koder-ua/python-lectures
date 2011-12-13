@@ -33,6 +33,10 @@ def lex(fc):
 	in_block = False
 
 	for line in fc.split('\n'):
+		
+		if line.strip().startswith('##'):
+			continue
+
 		if in_block:
 			if line.strip() == "":
 				yield EMPTY_LINE, line

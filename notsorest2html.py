@@ -36,13 +36,13 @@ def escape_html(text, esc_all=False):
     return "".join( html_escape_table.get(c, c) for c in text)
 
 
-re_bold1    = re.compile(r"(?i)(?<=\W)'\b(.+?)\b'(?=\W|$)")
-re_it1      = re.compile(r"(?i)(?<=\W)\*\b(.+?)\b\*(?=\W|$)")
-re_striked1 = re.compile(r"(?i)(?<=\W)-\b(.+?)\b-(?=\W|$)")
+re_bold1    = re.compile(r"(?iu)(?<=\W)'\b(.+?)\b'(?=\W|$)")
+re_it1      = re.compile(r"(?iu)(?<=\W)\*\b(.+?)\b\*(?=\W|$)")
+re_striked1 = re.compile(r"(?iu)(?<=\W)-\b(.+?)\b-(?=\W|$)")
 
-re_bold2    = re.compile(r"(?i)^'\b(.+?)\b'(?=\W|$)")
-re_it2      = re.compile(r"(?i)^\*\b(.+?)\b\*(?=\W|$)")
-re_striked2 = re.compile(r"(?i)^-\b(.+?)\b-(?=\W|$)")
+re_bold2    = re.compile(r"(?iu)^'\b(.+?)\b'(?=\W|$)")
+re_it2      = re.compile(r"(?iu)^\*\b(.+?)\b\*(?=\W|$)")
+re_striked2 = re.compile(r"(?iu)^-\b(.+?)\b-(?=\W|$)")
 
 assert not re_striked1.search('a-b-c')
 assert not re_striked1.search('a-b-')
@@ -50,8 +50,8 @@ assert re_striked2.match('-b-')
 assert re_striked1.search(' -b-')
 assert re_striked1.search(' -b- ')
 
-re_backref = re.compile(r"\[\s*([- _a-zA-Z]+)\s*\]")
-re_href = re.compile(r"(?P<name>\[\s*([- _a-zA-Z/.]+)\s*\])?(?P<proto>https?://)(?P<url>.*?)(?=\s|$)")
+re_backref = re.compile(ur"""(?u)\[\s*([- \w.|'"]+?)\s*\]""")
+re_href = re.compile(r"(?u)(?P<name>\[\s*([- _a-zA-Z/.]+)\s*\])?(?P<proto>https?://)(?P<url>.*?)(?=\s|$)")
 
 class NotSoRESTHandler(object):
     def __init__(self):
@@ -63,6 +63,9 @@ class NotSoRESTHandler(object):
     def get_result(self):
         return "".join(self.stream)
     
+    def set_result(self, res):
+        self.stream = res
+    
     def process(self, tp, data, style):
 
         if style is not None:
@@ -73,10 +76,16 @@ class NotSoRESTHandler(object):
         if style is not None:
             self.end_style(style)
 
+    def finalize(self):
+        pass
 
 class BlogspotHTMLProvider(NotSoRESTHandler):
+    
+    HREF_PREFIX = "_a_href_"
+
     def __init__(self):
         self.refs = []
+        self.href_map = {}
         super(BlogspotHTMLProvider, self).__init__()
 
     def write_text(self, text):
@@ -197,8 +206,9 @@ class BlogspotHTMLProvider(NotSoRESTHandler):
             
             self.write_raw('&nbsp;' * 10)
             if name:
-                self.write_raw('<a name="{0}">'.format(
-                    escape_html(name.replace(' ', '_'))))
+                name = name.replace(' ', '_')
+                self.href_map[name] = url
+                self.write_raw(u'<a name="{0}">'.format(escape_html(name)))
 
             self.do_href(url)
 
@@ -209,9 +219,15 @@ class BlogspotHTMLProvider(NotSoRESTHandler):
 
     def process_backref(self, ref_descr):
         gr1 = ref_descr.group(1)
-        return '<a href="#{0}">{1}</a>'.format(
-                    escape_html(gr1.replace(' ', '_')), 
-                    escape_html(gr1))
+        #return '<a href="#{0}">{1}</a>'.format(
+        #            escape_html(gr1.replace(' ', '_')), 
+        #            escape_html(gr1))
+        if '|' in gr1:
+            name, text = gr1.split('|', 1)
+        else:
+            text = name = gr1
+        name = name.replace(' ', '_')
+        return u'<a href="{0}">{1}</a>'.format(self.HREF_PREFIX + name, text)
                
     def process_href(self, mobj):
         name = mobj.group('name')
@@ -226,6 +242,8 @@ class BlogspotHTMLProvider(NotSoRESTHandler):
         
         if name is None:
             name = g2
+            if name.endswith('/'):
+                name = name[:-1]
         else:
             name = name[1:-1]
 
@@ -234,11 +252,20 @@ class BlogspotHTMLProvider(NotSoRESTHandler):
         
         return u'<a href="{0}">{1}</a>{2}'.format(url, name, add_symbol)
 
-    def write_footer(self):
+    def finalize(self):
+        self.write_raw('<p style="text-indent:20px">')
         self.write_raw(u'Исходники этого и других постов со скриптами лежат тут - ')
         self.do_href("[github.com/koder-ua]https://github.com/koder-ua/python-lectures.")
-        self.write_raw(u'При использовании их, пожалуйста, ссылайтесь на ')
+        self.write_raw(u' При использовании их, пожалуйста, ссылайтесь на ')
         self.do_href("[koder-ua.blogspot.com]http://koder-ua.blogspot.com/.")
+        self.write_raw('</p">')
+
+        res = self.get_result()
+
+        for name, val in self.href_map.items():
+            res = res.replace(self.HREF_PREFIX + name, val)
+        
+        self.set_result([res])
  
 
 def debug_block(block_type, data):
@@ -272,7 +299,7 @@ def not_so_rest_to_xxx(text, styles, formatter):
 
         formatter.process(block_type, data, style)
     
-    formatter.write_footer()
+    formatter.finalize()
     return formatter.get_result()
 
 style_cmd_re = re.compile(r"(?P<new_style>[-a-zA-Z0-9_]*)\s*=\s*(?P<old_style>[-a-zA-Z0-9_]*)\s*\[(?P<opts>.*)\]\s*(?:#.*)?$")
