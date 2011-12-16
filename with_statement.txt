@@ -129,7 +129,7 @@ python:
 	# Exit напечатается здесь
 
 	it = some_func()
-	.....
+
 	del it # или по выходу из текущего блока
 	# Exit напечатается здесь
 
@@ -147,7 +147,7 @@ python:
 
 python:
 	with open('/tmp/tt.txt') as fd:
-		.....
+		pass
 		# здесь файл закрывается
 	# переменная fd доступна, но файл уже закрыт
 	# <closed file '/tmp/tt.txt', mode 'r' at 0x1beeed0>
@@ -160,7 +160,6 @@ python:
 python:
 	def i_am_not_always_close_files():
 		fd = open(fname)
-		.....
 	
 	i_am_not_always_close_files()
 	# в этой точке файл уже закрыт 
@@ -363,7 +362,7 @@ python:
 	    	return getattr(self.transaction, 'list', [None])[-1]
 	
 	used_loop_devs = []
-	....
+
 	with AutoInheritedTransaction() as tr:
 		# создаем loop устройство
 		loop_name = subprocess.check_output("losetup -f --show /tmp/fs_image")

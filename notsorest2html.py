@@ -3,6 +3,11 @@
 import os
 import re
 import sys
+import warnings
+import traceback
+
+from pylint import lint
+import logilab.astng.builder
 
 from pygments import highlight
 from pygments.lexers import PythonLexer, \
@@ -14,7 +19,6 @@ from pygments.lexers import PythonLexer, \
 from pygments.formatters import HtmlFormatter
 
 from nsr_lexer import parse
-
 
 def deindent_snippet(snippet):
     snippet = snippet.replace('\t', ' ' * 4)
@@ -54,8 +58,9 @@ re_backref = re.compile(ur"""(?u)\[\s*([- \w.|'"]+?)\s*\]""")
 re_href = re.compile(r"(?u)(?P<name>\[\s*([- _a-zA-Z/.]+)\s*\])?(?P<proto>https?://)(?P<url>.*?)(?=\s|$)")
 
 class NotSoRESTHandler(object):
-    def __init__(self):
+    def __init__(self, opts):
         self.stream = []
+        self.opts = opts
     
     def write_raw(self, text):
         self.stream.append(text)
@@ -79,14 +84,93 @@ class NotSoRESTHandler(object):
     def finalize(self):
         pass
 
+hide_show_func = """
+    <script  type="text/javascript">
+        function on_hidabble_click()
+        {
+            var hide_id = $(this).attr("objtohide");
+            $('#' + hide_id).toggle();
+        }
+        $(".hidder").click(on_hidabble_click);
+    </script>
+"""
+
+class Reporter(object):
+    def __init__(self):
+        self.messages = []
+
+    def add_message(self, tp, params, message):
+        #print "I get message", tp, message
+        self.messages.append((tp, params, message))
+    
+    def display_results(self, *dt, **mp):
+        pass
+
+class Stdout_replacer(object):
+    def write(self, data):
+        pass
+
+def check_python_code(code, name):
+
+    code = u"# -*- coding:utf8 -*-\nfrom oktest import ok\n" + code
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        dname = os.tmpnam()
+
+    os.mkdir(dname)
+    fname = os.path.join(dname, "module.py")
+    open(fname, 'w').write(code.encode('utf8'))
+
+    try:
+
+        rep = Reporter()
+
+        try:
+            stderr = sys.stderr
+            sys.stderr = Stdout_replacer()  
+            logilab.astng.builder.MANAGER.astng_cache.clear()
+            lint.Run( [fname], rep, exit=False)
+            #lint.PyLinter( [fname], rep)
+        finally:
+            sys.stderr = stderr
+        
+        # try:
+        #     sys.path.insert(0, dname)
+        #     import module
+        # except:
+        #     traceback.print_exc()
+        # finally:
+        #     del sys.path[0]
+
+        for tp, data, msg in rep.messages:
+            if tp not in ('C0111',):
+                if tp == 'W0611' and msg == "Unused import ok":
+                    continue
+                print "{0} in line {1} : {2} {3}".format(name, data[3], tp, msg)
+
+    finally:    
+        os.unlink(fname)
+        os.rmdir(dname)
+
 class BlogspotHTMLProvider(NotSoRESTHandler):
     
     HREF_PREFIX = "_a_href_"
 
-    def __init__(self):
+    def __init__(self, opts):
         self.refs = []
         self.href_map = {}
-        super(BlogspotHTMLProvider, self).__init__()
+        super(BlogspotHTMLProvider, self).__init__(opts)
+
+        if self.opts.standalone:
+            self.write_raw("<html><head>")
+            self.write_raw('<meta http-equiv="Content-Type" content="text/html; charset=utf-8">')            
+            self.write_raw("</head><body>")
+                
+        
+        self.write_raw('<script type="text/javascript" ' + \
+                       'src="http://ajax.googleapis.com/ajax/' + \
+                       'libs/jquery/1.7.1/jquery.min.js"></script>\n')
 
     def write_text(self, text):
         self.write_raw(self.text_to_html(text).replace('\n', ' '))
@@ -145,6 +229,10 @@ class BlogspotHTMLProvider(NotSoRESTHandler):
                 lexer = self.highlighters_map[block]
                 def hliter(code):
                     code = deindent_snippet(code)
+                    
+                    if block == 'python':
+                        check_python_code(code, "")
+
                     hblock = highlight(code, lexer(), HtmlFormatter(noclasses=True))
                     self.write_raw(hblock.strip())
                 return hliter
@@ -169,6 +257,12 @@ class BlogspotHTMLProvider(NotSoRESTHandler):
             self.write_raw('<object data="{0}" type="image/svg+xml"></object>'.format(url)) 
         else:
             self.write_raw('<br><img src="{0}" width="740" /><br>'.format(url))
+
+    def on_hidepython(self, text):
+        self.write_raw('<div class="hidder" objtohide="h_1">hide/show</div>')
+        self.write_raw('<span id="h_1">')
+        self.on_python(text)
+        self.write_raw('</span>')
 
     def do_href(self, ref_descr):        
         self.write_raw(
@@ -258,7 +352,12 @@ class BlogspotHTMLProvider(NotSoRESTHandler):
         self.do_href("[github.com/koder-ua]https://github.com/koder-ua/python-lectures.")
         self.write_raw(u' При использовании их, пожалуйста, ссылайтесь на ')
         self.do_href("[koder-ua.blogspot.com]http://koder-ua.blogspot.com/.")
-        self.write_raw('</p">')
+        self.write_raw('</p>\n')
+        self.write_raw(hide_show_func)
+        self.write_raw("\n")
+
+        if self.opts.standalone:
+            self.write_raw("</body></html>")
 
         res = self.get_result()
 
@@ -327,9 +426,11 @@ def main(argv=None):
     
     parser = optparse.OptionParser()
 
-    parser.add_option("-s", "--style-files", dest='style_files', default='notsores_styles.txt')
+    parser.add_option("-s", "--style-files", dest='style_files', default='__def__')
     parser.add_option("-o", "--output-file", dest='output_file', default=None)
     parser.add_option("-f", "--format", dest='format', default='blogspot')
+    parser.add_option("-a", "--standalone", dest='standalone', default=False,
+                        action='store_true')
     
     opts, files = parser.parse_args(argv)
 
@@ -350,10 +451,13 @@ def main(argv=None):
 
     if opts.style_files != '':
         for style_fname in opts.style_files.split(':'):
+            if style_fname == '__def__':
+                style_fname = os.path.join(os.path.split(__file__)[0], 
+                                           'notsores_styles.txt')
             styles.update(parse_style_file(style_fname))
 
     formatters = {
-        'blogspot' : BlogspotHTMLProvider()
+        'blogspot' : BlogspotHTMLProvider(opts)
     }
 
     if opts.format not in formatters:
@@ -367,7 +471,7 @@ def main(argv=None):
             res_fname = os.path.splitext(fname)[0] + '.html'
         else:
             res_fname = opts.output_file
-
+        
         open(res_fname, "w").write(res.encode("utf8"))
         return 0
 

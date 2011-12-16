@@ -3,8 +3,8 @@ import re
 def indent_level(line):
 	return len(line) - len(line.lstrip())
 
-block_begin_re = re.compile(r'([a-zA-Z]*):\s*$')
-block_sline_re = re.compile(r'([a-zA-Z]*):\s(.+)$')
+block_begin_re = re.compile(r'(?P<btype>[-a-zA-Z_]*)(?:\[(?P<opts>.*?)\])?:\s*$')
+block_sline_re = re.compile(r'(?P<btype>[-a-zA-Z_]*)(?:\[(?P<opts>.*?)\])?:\s*(?P<data>.+)$')
 block_cut_re = re.compile(r'<---*>\s*$')
 
 LINE = 'line'
@@ -27,6 +27,11 @@ def debug_prn(block_tp, block):
 	print
 	print '~' * 50
 
+def split_opts(opts):
+	if opts is None:
+		return []
+	else:
+		return [i.strip() for i in opts.split(',')]
 
 def lex(fc):
 	fc = fc.replace('\t', ' ' * 4)
@@ -39,14 +44,14 @@ def lex(fc):
 
 		if in_block:
 			if line.strip() == "":
-				yield EMPTY_LINE, line
+				yield EMPTY_LINE, None, line
 				continue
 			elif indent_level(line) == 0:
 				in_block = False
-				yield DEINDENT, None
+				yield DEINDENT, None, None
 				# continue execution to process current line
 			else:
-				yield LINE, line
+				yield LINE, None, line
 				continue
 
 		# begin of block
@@ -54,27 +59,32 @@ def lex(fc):
 
 		if bbre:
 			in_block = True
-			yield BLOCK_BEGIN, bbre.group(1)
+
+			opts = split_opts(bbre.group('opts'))
+			yield BLOCK_BEGIN, opts, bbre.group('btype')
 			continue
 
 		# single line block
 		bsre = block_sline_re.match(line)
 
 		if bsre:
-			yield BLOCK_SLINE, (bsre.group(1), bsre.group(2).strip())
+
+			opts = split_opts(bsre.group('opts'))
+			yield BLOCK_SLINE, opts, (bsre.group('btype'), 
+									  bsre.group('data').strip())
 			continue
 		
 		# list item begin
 		if line.strip().startswith('* '):
 			in_block = True
-			yield LIST_ITEM_BEGIN, line[2:].strip()
+			yield LIST_ITEM_BEGIN, None, line[2:].strip()
 			continue
 		
 		if line.strip() == "":
-			yield EMPTY_LINE, None
+			yield EMPTY_LINE, None, None
 		else:
 			# simple line
-			yield LINE, line
+			yield LINE, None, line
 
 LIST_ITEM = 'list_item'
 TEXT_PARA = 'text'
@@ -124,8 +134,8 @@ def _parse(fc):
 	cblock = []
 	block_tp = None
 
-	for line_tp, data in lex(fc):
-		
+	for line_tp, opts, data in lex(fc):
+
 		#debug_prn(line_tp, data)
 
 		if in_block:
@@ -217,85 +227,6 @@ def parse(fc):
 			list_items.append(block.rstrip())
 		else:
 			yield block_tp, block.rstrip()
-	 
-data1 = \
-"""
-====
-_h1_
-====
-
-_h2_
-====
-
-_h3_
-----
-
-_h4_
-~~~~
-
-	MyParax
-yyyy
-
-"""
-
-data2 = \
-"""
-raw:
-	some_data
-
-python:
-	with y:
-		pass
-
-python:
-	with y:
-		pass
-
-	x = y + 1
-
-Autor: koder
-
-rrrr : some data
-"""
-
-data3 = \
-"""
-Some text:
-	* X1
-	* X2
-	* X3
-"""
-
-test_data = { data1 : [(TEXT_H1,"_h1_"), 
-					   (TEXT_H2,"_h2_"),
-					   (TEXT_H3,"_h3_"),
-					   (TEXT_H4,"_h4_"),
-					   (TEXT_PARA, "    MyParax\nyyyy")],
-			   data2 : [('raw',"    some_data"), 
-			 		   ('python',"    with y:\n        pass"),
-			 		   ('python',"    with y:\n        pass\n\n    x = y + 1"),
-			 		   ('Autor', "koder"),
-			 		   (TEXT_PARA, "rrrr : some data")]
-			 }
-
-def test():
-	from oktest import ok
-
-	for bdata, data_list in test_data.items():
-		for (need_tp, need_data),(get_tp, get_data) in zip(data_list, parse(bdata)):
-			ok(need_tp) == get_tp
-			ok(need_data) == get_data
-
-if __name__ == "__main__":
-	test()
-
-	for get_tp, get_data in parse(open('metaclasses.txt').read()):
-		pass
-			
-
-
-
-
 
 
 
