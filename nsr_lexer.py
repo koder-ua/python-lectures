@@ -1,10 +1,11 @@
 import re
+from py_struct import Struct
 
 def indent_level(line):
 	return len(line) - len(line.lstrip())
 
-block_begin_re = re.compile(r'(?P<btype>[-a-zA-Z_]*)(?:\[(?P<opts>.*?)\])?:\s*$')
-block_sline_re = re.compile(r'(?P<btype>[-a-zA-Z_]*)(?:\[(?P<opts>.*?)\])?:\s*(?P<data>.+)$')
+block_begin_re = re.compile(r'(?P<btype>[-a-zA-Z_.]*)(?:\[(?P<opts>.*?)\])?:\s*$')
+block_sline_re = re.compile(r'(?P<btype>[-a-zA-Z_.]*)(?:\[(?P<opts>.*?)\])?:\s*(?P<data>.+)$')
 block_cut_re = re.compile(r'<---*>\s*$')
 
 LINE = 'line'
@@ -13,6 +14,9 @@ DEINDENT = 'deindent'
 BLOCK_SLINE = 'block_sline'
 LIST_ITEM_BEGIN = 'list_item'
 EMPTY_LINE = 'empty_line'
+
+class NotSoRESTSyntaxError(ValueError):
+	pass
 
 def debug_prn(block_tp, block):
 	print
@@ -29,62 +33,95 @@ def debug_prn(block_tp, block):
 
 def split_opts(opts):
 	if opts is None:
-		return []
+		return {}
 	else:
-		return [i.strip() for i in opts.split(',')]
+		res = {}
+		for opt in opts.split(','):
+			if '=' in opt:
+				opt, val = opt.split('=', 1)
+			else:
+				val = True
+
+			if opt in res:
+				raise NotSoRESTSyntaxError("Myltiply opt {0!r}.")
+			
+			res[opt] = val
+
+		return res
+
+class LexLine(Struct):
+	attrs = 'tp, line, opts, data[, btype]'
+
+class LexBlock(Struct):
+	attrs = 'tp, line, opts, data'
+
+class Block(Struct):
+	attrs = 'tp, line, opts, data[, style]'
 
 def lex(fc):
 	fc = fc.replace('\t', ' ' * 4)
 	in_block = False
 
-	for line in fc.split('\n'):
-		
-		if line.strip().startswith('##'):
-			continue
+	for line_num, line in enumerate(fc.split('\n')):
+		try:
 
-		if in_block:
+			if line.strip().startswith('##'):
+				continue
+
+			if in_block:
+				if line.strip() == "":
+					yield LexLine(EMPTY_LINE, line_num, {}, line)
+					continue
+				elif indent_level(line) == 0:
+					in_block = False
+					yield LexLine(DEINDENT, line_num, {}, None)
+					# continue execution to process current line
+				else:
+					yield LexLine(LINE, line_num, {}, line)
+					continue
+
+			# begin of block
+			bbre = block_begin_re.match(line)
+
+			if bbre:
+				in_block = True
+
+				opts = split_opts(bbre.group('opts'))
+				yield LexLine(BLOCK_BEGIN, line_num, opts, bbre.group('btype'))
+				continue
+
+			# single line block
+			bsre = block_sline_re.match(line)
+
+			if bsre:
+
+				opts = split_opts(bsre.group('opts'))
+				yield LexLine(BLOCK_SLINE,
+							  line_num, opts, 
+							  bsre.group('data').strip(),
+							  bsre.group('btype'))
+				continue
+			
+			# list item begin
+			if line.strip().startswith('* '):
+				in_block = True
+				yield LexLine(LIST_ITEM_BEGIN, line_num, {}, line[2:].strip())
+				continue
+			
 			if line.strip() == "":
-				yield EMPTY_LINE, None, line
-				continue
-			elif indent_level(line) == 0:
-				in_block = False
-				yield DEINDENT, None, None
-				# continue execution to process current line
+				yield LexLine(EMPTY_LINE, line_num, {}, None)
 			else:
-				yield LINE, None, line
-				continue
+				# simple line
+				yield LexLine(LINE, line_num, {}, line)
+		except NotSoRESTSyntaxError as exc:
+			exc.message += " In line num {0} - {1!r}".format(line_num, line)
+			exc.lineno = line_num
+			exc.line = line
+			raise exc
+		except Exception as exc:
+			exc.message += "While parse line num {0} - {1!r}".format(line_num, 
+															line)
 
-		# begin of block
-		bbre = block_begin_re.match(line)
-
-		if bbre:
-			in_block = True
-
-			opts = split_opts(bbre.group('opts'))
-			yield BLOCK_BEGIN, opts, bbre.group('btype')
-			continue
-
-		# single line block
-		bsre = block_sline_re.match(line)
-
-		if bsre:
-
-			opts = split_opts(bsre.group('opts'))
-			yield BLOCK_SLINE, opts, (bsre.group('btype'), 
-									  bsre.group('data').strip())
-			continue
-		
-		# list item begin
-		if line.strip().startswith('* '):
-			in_block = True
-			yield LIST_ITEM_BEGIN, None, line[2:].strip()
-			continue
-		
-		if line.strip() == "":
-			yield EMPTY_LINE, None, None
-		else:
-			# simple line
-			yield LINE, None, line
 
 LIST_ITEM = 'list_item'
 TEXT_PARA = 'text'
@@ -130,16 +167,15 @@ def classify_para(data):
 	return TEXT_PARA, data
 
 def _parse(fc):
-	in_block = False
-	cblock = []
-	block_tp = None
+	curr_block = None
+	lines_for_next_block = []
 
-	for line_tp, opts, data in lex(fc):
+	for line in lex(fc):
 
 		#debug_prn(line_tp, data)
 
-		if in_block:
-			if line_tp == DEINDENT:
+		if curr_block is not None:
+			if line.tp == DEINDENT:
 				# fix for next problem
 				# python:
 				#     x = 1
@@ -147,56 +183,63 @@ def _parse(fc):
 				#     New text begin here with para
 				# we should do......
 
-				if len(cblock) >= 3 and cblock[-1] != '' and cblock[-2] == '':
-					not_a_block_line = cblock[-1]
-					cblock = cblock[:-1]
-				else:
-					not_a_block_line = None
+				if len(curr_block.data) >= 3 and \
+					 curr_block.data[-1] != '' and \
+					 curr_block.data[-2] == '':
 
-				yield block_tp, "\n".join(cblock)
-
-				if not_a_block_line:
-					cblock = [not_a_block_line]
+					lines_for_next_block = [curr_block.data[-1]]
+					curr_block.data = curr_block.data[:-1]
 				else:
-					cblock = []
+					lines_for_next_block = []
+
+				yield curr_block
 				
-				in_block = False
-				block_tp = None
-			elif line_tp == LINE:
-				cblock.append(data)
-			elif line_tp == EMPTY_LINE:
+				curr_block = None
+
+			elif line.tp == LINE:
+				curr_block.data.append(line.data)
+			elif line.tp == EMPTY_LINE:
 				# empty line is an end of paragraph
-				if block_tp == TEXT_PARA:
-					yield block_tp, "\n".join(cblock) 
-					cblock = []
-					in_block = False
-					block_tp = None
+				if curr_block.tp == TEXT_PARA:
+
+					yield curr_block
+					curr_block = None
+
 				else:
-					cblock.append("")
+					curr_block.data.append("")
 			else:
-				raise ValueError("Item type {0!r} should not happened inside the block".format(line_tp))
+				raise NotSoRESTSyntaxError(
+						("Item type {0!r} should not happened " + \
+									"inside the block").format(line_tp))
 		else:
-			if line_tp == EMPTY_LINE:
+			if line.tp == EMPTY_LINE:
 				pass
-			elif line_tp == LINE:
-				block_tp = TEXT_PARA
-				in_block = True
-				cblock.append(data)
-			elif line_tp == BLOCK_SLINE:
-				block_tp, data = data
-				yield block_tp, data
-			elif line_tp == LIST_ITEM_BEGIN:
-				block_tp = LIST_ITEM
-				in_block = True
-				cblock.append(data)
-			elif line_tp == BLOCK_BEGIN:
-				block_tp = data
-				in_block = True
+			elif line.tp == LINE:
+				curr_block = LexBlock(TEXT_PARA, line.line, line.opts, 
+									  lines_for_next_block + [line.data])
+				lines_for_next_block = []
+			elif line.tp == BLOCK_SLINE:
+				assert lines_for_next_block == []
+				yield LexBlock(line.btype, line.line, line.opts, 
+									  [line.data])
+			elif line.tp == LIST_ITEM_BEGIN:
+				curr_block = LexBlock(LIST_ITEM, 
+									  line.line, 
+									  line.opts, 
+									  lines_for_next_block + [line.data])
+				lines_for_next_block = []
+			elif line.tp == BLOCK_BEGIN:
+				curr_block = LexBlock(line.data, 
+									  line.line + 1, 
+									  line.opts, 
+									  lines_for_next_block)
+				lines_for_next_block = []
 			else:
-				raise ValueError("Item type {0!r} should not happened outside the block".format(line_tp))
+				raise ValueError(("Item type {0!r} should not happened " + \
+									"outside the block").format(line_tp))
 	
-	if in_block and cblock != []:
-		yield block_tp, "\n".join(cblock)
+	if curr_block is not None and curr_block.data != []:
+		yield curr_block
 
 OUTPUT_TYPES = \
 	[
@@ -212,21 +255,29 @@ OUTPUT_TYPES = \
 
 def parse(fc):
 	list_items = []
+	list_starts = None
 
-	for block_tp, block in _parse(fc):
+	for block in _parse(fc):
 		
-		if len(list_items) != 0 and LIST_ITEM != block_tp:
-			yield LIST, list_items
+		if len(list_items) != 0 and LIST_ITEM != block.tp:
+			yield Block(LIST, list_starts, {}, list_items)
 			list_items = []
-		if TEXT_PARA == block_tp:
-			new_tp, new_data = classify_para(block)
+			list_starts = None
+		if TEXT_PARA == block.tp:
+			new_tp, new_data = classify_para("\n".join(block.data))
+			
 			if isinstance(new_data, basestring):
 				new_data = new_data.rstrip()
-			yield new_tp, new_data
-		elif LIST_ITEM == block_tp:
-			list_items.append(block.rstrip())
+
+			yield Block(new_tp, block.line, block.opts, new_data)
+		elif LIST_ITEM == block.tp:
+			list_items.append("\n".join(block.data).rstrip())
+
+			if list_starts is None:
+				list_starts = block.line
 		else:
-			yield block_tp, block.rstrip()
+			yield Block(block.tp, block.line, block.opts, 
+							"\n".join(block.data).rstrip())
 
 
 

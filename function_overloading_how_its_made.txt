@@ -1,0 +1,102 @@
+================
+Как это сделано?
+================
+
+	Отсутствие перегрузки функций - это то что мне всегда 
+не нравилось в python. Не то что бы без них невозможно было жить, да
+и виртуальные методы типа '__len__' сглаживают проблему, но все-таки.
+И пусть есть [PEAK.rules], но его синтаксис всегда раздражал. Ну вот как можно 
+без боли смотреть на это:
+
+python:
+	from peak.rules import abstract, when
+
+	@abstract()
+	def pprint(ob):
+	    """A pretty-printing generic function"""
+
+	@when(pprint, (list,))
+	def pprint_list(ob):
+    	print "pretty-printing a list"	
+
+	@when(pprint, (int,))
+	def pprint_int(ob):
+    	print "pretty-printing an integer"
+    
+    #......	
+   
+    Во-первых опять нужно придумывать для каждого типа свои 
+имена функций, во-вторых не по-питоновски много лишних нажатий 
+клавиш, даже в С++ это - лишнее: "@when(pprint, ("  :).
+
+<------------------------------------------------------------------------------>
+	
+	Но как-то ничего принципиально лучше придумать не удавалось.
+В python 3+ можно будет в конце концов сделать отличную перегрузку 
+методов через метаклассы, но до его массового использования в 
+продакшене пока далековато. И вот недавно, при написании статьи
+про метаклассы в python 3 и находясь под влияние пересмотра одного
+видео с последнего [pycon-videos], пришла в голову мысль которая 
+оказалась рабочей ( впрочем я бы три раза подумал перед тем как положить 
+такой код в файл, который будет использовать кто-то другой). 
+
+	Ну собственно угадайте как работает написанное ниже (какая магия зашита 
+в 'method_overloader.overloadable'):
+
+python:
+	from method_overloader import overloadable
+	
+	@overloadable()
+	class A(object):
+	    def overloaded_func(self, x):
+	        "int"
+	        return "Integer func called {0}".format(x)
+	    
+	    def overloaded_func(self, x):
+	        "str"
+	        return "String func called {0!r}".format(x)
+
+	    def overloaded_func(self, x):
+	        "float"
+	        return "Float func called {0!r}".format(x)
+
+	    def overloaded_func(self, x):
+	        "list"
+	        return "List func called {0!r}".format(x)
+
+	t = A()
+
+	print "t.overloaded_func(1)         =", t.overloaded_func(1)
+	print "t.overloaded_func('asas')    =", t.overloaded_func("asas")
+	print "t.overloaded_func(1.1)       =", t.overloaded_func(1.1)
+	print "t.overloaded_func([1, 2, 3]])       =", t.overloaded_func([1, 2, 3])
+
+Запускаем -
+
+raw:
+	.........$ python overload.py 
+	t.overloaded_func(1)         = Integer func called 1             
+	t.overloaded_func('asas')    = String func called 'asas'
+	t.overloaded_func(1.1)       = Float func called 1.1
+	t.overloaded_func([1, 2, 3]])       = List func called [1, 2, 3]
+
+
+	Все это на обычном python без подмены механизма импорта, без ковыряния в [ast]
+и т.п. Ответы можно на koder.mail@gmail.com.
+
+	P.S. Если что - в python2.X метаклассе невозможно узнать что происходило в 
+теле класса, можно только узнать что вышло в итоге, т.е.:
+
+python:
+	class M(object):
+		s = 1
+		s = 2
+
+	в метакласс класса прийдет в качестве словаря класса {'s' : 2} и узнать
+что еще было 's = 1' в метаклассе нельзя. 
+
+linklist:
+	PEAK.rules http://pypi.python.org/pypi/PEAK-Rules
+	pycon-videos http://blip.tv/pycon-us-videos-2009-2010-2011
+	ast http://docs.python.org/library/ast.html
+   

@@ -3,6 +3,8 @@
 import os
 import re
 import sys
+import uuid
+import inspect
 import warnings
 import traceback
 
@@ -40,6 +42,11 @@ def escape_html(text, esc_all=False):
     return "".join( html_escape_table.get(c, c) for c in text)
 
 
+re_inline_code = re.compile(r"(?iu)''(.+?)''")
+re_it      = re.compile(r"(?iu)~(.+?)~")
+re_bold    = re.compile(r"(?iu)\*(.+?)\*")
+re_striked = re.compile(r"(?iu)--(.+?)--")
+
 re_bold1    = re.compile(r"(?iu)(?<=\W)'\b(.+?)\b'(?=\W|$)")
 re_it1      = re.compile(r"(?iu)(?<=\W)\*\b(.+?)\b\*(?=\W|$)")
 re_striked1 = re.compile(r"(?iu)(?<=\W)-\b(.+?)\b-(?=\W|$)")
@@ -71,15 +78,31 @@ class NotSoRESTHandler(object):
     def set_result(self, res):
         self.stream = res
     
-    def process(self, tp, data, style):
+    def process(self, block):
 
-        if style is not None:
-            self.start_style(style)
+        if block.style is not None:
+            self.start_style(block.style)
+        
+        self.block_opts = block.opts
 
-        getattr(self, 'on_' + tp)(data) #, lambda x : None
+        tp = block.tp.split('.')
 
-        if style is not None:
-            self.end_style(style)
+        for curr_tp in tp[:-1]:
+            getattr(self, 'on_open_' + curr_tp)()
+
+        func = getattr(self, 'on_' + tp[-1])
+        args = inspect.getargspec(func).args
+
+        if 'line' in args:
+            func(block.data, line=block.line)
+        else:
+            func(block.data)
+
+        for curr_tp in tp[:-1][::-1]:
+            getattr(self, 'on_close_' + curr_tp)()
+
+        if block.style is not None:
+            self.end_style(block.style)
 
     def finalize(self):
         pass
@@ -88,12 +111,44 @@ hide_show_func = """
     <script  type="text/javascript">
         function on_hidabble_click()
         {
-            var hide_id = $(this).attr("objtohide");
-            $('#' + hide_id).toggle();
+            var me = $(this);
+            var hide_id = me.attr("objtohide");
+            var controlled_object = $('#' + hide_id);
+            controlled_object.toggle();
+
+            if ( controlled_object.is(":visible") )
+                me.html(me.attr("visible_text"));
+            else
+                me.html(me.attr("hided_text"));
+
+            return false;
         }
         $(".hidder").click(on_hidabble_click);
+
+        function on_double_hidabble_click()
+        {
+            var me = $(this);
+            
+            var hide_id1 = me.attr("objtohide1");
+            var hide_id2 = me.attr("objtohide2");
+            
+            var controlled_object1 = $('#' + hide_id1);
+            var controlled_object2 = $('#' + hide_id2);
+            
+            controlled_object1.toggle();
+            controlled_object2.toggle();
+
+            if ( controlled_object1.is(":visible") )
+                me.html(me.attr("visible_text"));
+            else
+                me.html(me.attr("hided_text"));
+
+            return false;
+        }
+        $(".dhidder").click(on_double_hidabble_click);
     </script>
 """
+show_hide_block = ""
 
 class Reporter(object):
     def __init__(self):
@@ -110,9 +165,16 @@ class Stdout_replacer(object):
     def write(self, data):
         pass
 
-def check_python_code(code, name):
+def check_python_code(code, line, use_lint=True, imp_mod=False):
 
-    code = u"# -*- coding:utf8 -*-\nfrom oktest import ok\n" + code
+    code = "# -*- coding:utf8 -*-\nfrom oktest import ok\n" + code.encode("utf8")
+
+    try:
+        compile(code, "<opt_file>", 'exec')
+    except SyntaxError as err:
+        err.lineno += line - 2
+        err.args = (err.args[0], (err.args[1][0], err.args[1][1] + line - 2, err.args[1][2]))
+        raise err
 
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
@@ -120,7 +182,8 @@ def check_python_code(code, name):
 
     os.mkdir(dname)
     fname = os.path.join(dname, "module.py")
-    open(fname, 'w').write(code.encode('utf8'))
+    
+    open(fname, 'w').write(code)
 
     try:
 
@@ -130,28 +193,47 @@ def check_python_code(code, name):
             stderr = sys.stderr
             sys.stderr = Stdout_replacer()  
             logilab.astng.builder.MANAGER.astng_cache.clear()
-            lint.Run( [fname], rep, exit=False)
+            rcfile = os.path.join(os.path.abspath(os.path.dirname(__file__)), "pylintrc")
+            lint.Run( [fname, '--rcfile=' + rcfile], rep, exit=False)
             #lint.PyLinter( [fname], rep)
         finally:
             sys.stderr = stderr
         
-        # try:
-        #     sys.path.insert(0, dname)
-        #     import module
-        # except:
-        #     traceback.print_exc()
-        # finally:
-        #     del sys.path[0]
+        if imp_mod:
+            try:
+                sys.path.insert(0, dname)
+                import module
+            except:
+                traceback.print_exc()
+            finally:
+                del sys.path[0]
+                del sys.modules['module']
 
         for tp, data, msg in rep.messages:
             if tp not in ('C0111',):
                 if tp == 'W0611' and msg == "Unused import ok":
                     continue
-                print "{0} in line {1} : {2} {3}".format(name, data[3], tp, msg)
+                print "Python block in line {0}: {1} {2}".format(
+                        line + data[3] - 2, # we add two lines to the top og the file
+                        tp, msg)
 
     finally:    
         os.unlink(fname)
         os.rmdir(dname)
+
+hide_show = '<a hided_text="{hided_text}" ' + \
+            'visible_text="{visible_text}" ' + \
+            'style="border-bottom: 2px dotted #2020B0; ' + \
+                    'color: #2020B0; font-style:italic; font-size: 80%" ' + \
+            'class="hidder" objtohide="{hided_id}">{default_text}</a>'
+
+hide_show_span = '<span {default_style} id="{hided_id}">'
+
+hide_show2 = '<a hided_text="{hided_text}" ' + \
+            'visible_text="{visible_text}" ' + \
+            'style="border-bottom: 2px dotted #2020B0; ' + \
+                    'color: #2020B0; font-style:italic; font-size: 80%" ' + \
+            'class="dhidder" objtohide1="{hided_id1}" objtohide2="{hided_id2}" >{default_text}</a>'
 
 class BlogspotHTMLProvider(NotSoRESTHandler):
     
@@ -182,14 +264,32 @@ class BlogspotHTMLProvider(NotSoRESTHandler):
         ntext = re_bold1.sub(r"<b>\1</b>", ntext)
         ntext = re_it1.sub(r"<i>\1</i>", ntext)
         ntext = re_striked1.sub(r"<s>\1</s>", ntext)
+        
         ntext = re_bold2.sub(r"<b>\1</b>", ntext)
         ntext = re_it2.sub(r"<i>\1</i>", ntext)
         ntext = re_striked2.sub(r"<s>\1</s>", ntext)
+
+        ntext = re_bold.sub(r"<b>\1</b>", ntext)
+        ntext = re_it.sub(r"<i>\1</i>", ntext)
+        ntext = re_striked.sub(r"<s>\1</s>", ntext)
+        ntext = re_inline_code.sub(r"<b>\1</b>", ntext)
+
         ntext = re_backref.sub(self.process_backref, ntext)
         ntext = re_href.sub(self.process_href, ntext)
 
         return ntext
     
+    def on_open_hide(self):
+        oid = str(uuid.uuid1()).replace("-", "")
+        self.write_raw((hide_show + "<br>" + hide_show_span).format(hided_text="Show", 
+                                        visible_text="Hide",
+                                        hided_id=oid,
+                                        default_style='style="display:none"',
+                                        default_text="Show"))
+
+    def on_close_hide(self):
+        self.write_raw('</span>')
+
     def start_style(self, style):
         self.write_raw('<span style="{0}">'.format(style))
     
@@ -227,14 +327,46 @@ class BlogspotHTMLProvider(NotSoRESTHandler):
             block = name[3:]
             if block in self.highlighters_map:
                 lexer = self.highlighters_map[block]
-                def hliter(code):
+                def hliter(code, line):
                     code = deindent_snippet(code)
                     
                     if block == 'python':
-                        check_python_code(code, "")
+                        opts = self.block_opts if self.block_opts is not None else tuple()
+
+                        use_lint = '-' not in opts
+                        imp_mod = 'ut' in opts
+                        
+                        check_python_code(code, line, use_lint=lint, imp_mod=imp_mod)
+                    
+                    splits = re.split(r"\n#----*\n", code)
+
+                    if len(splits) == 1:
+                        code = raw = splits[0]
+                    elif len(splits) == 3:
+                        code = splits[1]
+                        raw = "\n\n".join(splits)
 
                     hblock = highlight(code, lexer(), HtmlFormatter(noclasses=True))
+
+                    oid_code = str(uuid.uuid1()).replace("-", "")
+                    oid_raw = str(uuid.uuid1()).replace("-", "")
+
+                    self.write_raw(
+                        hide_show2.format(hided_text="Hightlited/Raw", 
+                                          visible_text="Hightlited/Raw",
+                                          hided_id1=oid_code,
+                                          hided_id2=oid_raw,
+                                          default_text="Hightlited/Raw"))
+
+                    self.write_raw("<br>")
+                    self.write_raw(hide_show_span.format(hided_id=oid_code, default_style=""))
                     self.write_raw(hblock.strip())
+                    self.write_raw("</span>")
+
+                    self.write_raw(hide_show_span.format(hided_id=oid_raw, default_style='style="font-size:120%;display:none"'))
+                    self.on_raw(raw)
+                    self.write_raw("</span>")
+
                 return hliter
 
         if name in ('on_text_h2', 'on_text_h3', 'on_text_h4'):
@@ -244,6 +376,9 @@ class BlogspotHTMLProvider(NotSoRESTHandler):
                 self.write_text(text)
                 self.write_raw('</h{0}>'.format(hlevel))
             return header
+        
+        if name == 'on_text_h1':
+            return lambda x : None
 
         raise AttributeError("type %r has no attribute %s" % (self.__class__, name))
 
@@ -257,12 +392,6 @@ class BlogspotHTMLProvider(NotSoRESTHandler):
             self.write_raw('<object data="{0}" type="image/svg+xml"></object>'.format(url)) 
         else:
             self.write_raw('<br><img src="{0}" width="740" /><br>'.format(url))
-
-    def on_hidepython(self, text):
-        self.write_raw('<div class="hidder" objtohide="h_1">hide/show</div>')
-        self.write_raw('<span id="h_1">')
-        self.on_python(text)
-        self.write_raw('</span>')
 
     def do_href(self, ref_descr):        
         self.write_raw(
@@ -367,15 +496,15 @@ class BlogspotHTMLProvider(NotSoRESTHandler):
         self.set_result([res])
  
 
-def debug_block(block_type, data):
-    print block_type 
+def debug_block(block):
+    print block.type 
     print 
-    if isinstance(data, basestring):
-        print data.encode('utf8')
-    elif isinstance(data, (list, tuple)):
-        print (u"\n >>>> " + u"\n >>>> ".join(data)).encode('utf8')
+    if isinstance(block.data, basestring):
+        print block.data.encode('utf8')
+    elif isinstance(block.data, (list, tuple)):
+        print (u"\n >>>> " + u"\n >>>> ".join(block.data)).encode('utf8')
     else:
-        print repr(data)
+        print repr(block.data)
 
     print "~~" * 50
     print
@@ -384,19 +513,16 @@ def not_so_rest_to_xxx(text, styles, formatter):
 
     text = text.replace('\t', ' ' * 4)
     
-    # skip header
-    text = text.split('\n', 3)[3]
-
-    for block_type, data in parse(text):
+    for block in parse(text):
         
-        #debug_block(block_type, data)
+        #debug_block(block)
 
-        if block_type in styles:
-             block_type, style = styles[block_type]
+        if block.tp in styles:
+             block.tp, block.style = styles[block.tp]
         else:
              style = None
 
-        formatter.process(block_type, data, style)
+        formatter.process(block)
     
     formatter.finalize()
     return formatter.get_result()
