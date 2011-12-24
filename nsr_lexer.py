@@ -11,7 +11,6 @@ block_cut_re = re.compile(r'<---*>\s*$')
 LINE = 'line'
 BLOCK_BEGIN = 'block_begin'
 DEINDENT = 'deindent'
-BLOCK_SLINE = 'block_sline'
 LIST_ITEM_BEGIN = 'list_item'
 EMPTY_LINE = 'empty_line'
 
@@ -90,18 +89,6 @@ def lex(fc):
 				yield LexLine(BLOCK_BEGIN, line_num, opts, bbre.group('btype'))
 				continue
 
-			# single line block
-			bsre = block_sline_re.match(line)
-
-			if bsre:
-
-				opts = split_opts(bsre.group('opts'))
-				yield LexLine(BLOCK_SLINE,
-							  line_num, opts, 
-							  bsre.group('data').strip(),
-							  bsre.group('btype'))
-				continue
-			
 			# list item begin
 			if line.strip().startswith('* '):
 				in_block = True
@@ -209,8 +196,8 @@ def _parse(fc):
 					curr_block.data.append("")
 			else:
 				raise NotSoRESTSyntaxError(
-						("Item type {0!r} should not happened " + \
-									"inside the block").format(line_tp))
+						("At line {0}. Item type {1!r} should not happened " + \
+									"inside the block").format(line.line, line.tp))
 		else:
 			if line.tp == EMPTY_LINE:
 				pass
@@ -218,22 +205,21 @@ def _parse(fc):
 				curr_block = LexBlock(TEXT_PARA, line.line, line.opts, 
 									  lines_for_next_block + [line.data])
 				lines_for_next_block = []
-			elif line.tp == BLOCK_SLINE:
-				assert lines_for_next_block == []
-				yield LexBlock(line.btype, line.line, line.opts, 
-									  [line.data])
+
 			elif line.tp == LIST_ITEM_BEGIN:
 				curr_block = LexBlock(LIST_ITEM, 
 									  line.line, 
 									  line.opts, 
 									  lines_for_next_block + [line.data])
 				lines_for_next_block = []
+
 			elif line.tp == BLOCK_BEGIN:
 				curr_block = LexBlock(line.data, 
 									  line.line + 1, 
 									  line.opts, 
 									  lines_for_next_block)
 				lines_for_next_block = []
+
 			else:
 				raise ValueError(("Item type {0!r} should not happened " + \
 									"outside the block").format(line_tp))
@@ -243,7 +229,6 @@ def _parse(fc):
 
 OUTPUT_TYPES = \
 	[
-		# BLOCK_SLINE
 	    TEXT_PARA,
 		LIST,
 		TEXT_H1,

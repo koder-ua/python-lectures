@@ -1,0 +1,113 @@
+=========================
+Решение предыдущего поста
+=========================
+
+	Если вы не читали предыдущий пост - начните с него.
+
+<-------------------------------------------------------------------->
+
+	'overloadable' включает трассировку и следит за исполнением тела класса.
+Если обнаруживает, что значение исполняемой переменной было изменено - подменяет
+ее на объект, управляющий вызовом соответствующей функции в зависимости от параметров.
+
+python:
+	# -*- coding:utf8 -*-
+	import sys
+
+	def overloadable():
+	    sys.settrace(OverloadTracer().on_event)
+	    def closure(cls):
+	        # удаляем трассировку по выходу из класса
+	        # вообще говоря это можно сделать по 'return'
+	        # но семантика декоратора заставит использовать
+	        # код по назначению
+	        sys.settrace(None)
+	        return cls
+	    return closure
+
+	class OverloadTracer(object):
+	    
+	    def __init__(self):
+	        self.in_class = False
+	        self.prev_locals = {}
+
+	    def on_event(self, frame, event, _):
+	        #вызывается при каждом событии трассировки
+	        if event == 'return':
+	            # возврат из блока
+	            self.update_locals(frame.f_locals)
+	        elif event == 'call':
+	            # вызов - открытие блока
+	            # не заходим во вложенные вызовы
+	            if self.in_class:
+	                return None
+	            self.in_class = True
+	        else:
+	            self.update_locals(frame.f_locals)
+	        return self.on_event
+	    
+	    def update_locals(self, loc):
+	        # сравниваем loc с self.prev_locals
+	        for name, prev_val in self.prev_locals.items():
+	            if name in loc:
+	                # если находим перекрытие функции - подменяем ее на объект,
+	                # управляющий перегрузкой
+	                if loc[name] is not prev_val and \
+	                    ( callable(prev_val) or \
+	                    	isinstance(prev_val, OverloadableFunc) )and \
+	                        callable(loc[name]):
+	                    loc[name] = self.overload(prev_val, loc[name])
+	        
+	        # делаем копию текущего состояния тела класса
+	        self.prev_locals = loc.copy()
+	    
+	    @staticmethod
+	    def overload(prev_val, curr_val):
+
+	        if not isinstance(prev_val, OverloadableFunc):
+	            overld = OverloadableFunc()
+	            overld.add(prev_val)
+	            prev_val = overld
+
+	        prev_val.add(curr_val)
+	        return prev_val
+
+	# класс имитирует функцию с одним аргументом
+	# и по его типу выбирает соответствующий зарегистрированный обработчик
+	class OverloadableFunc(object):
+	    def __init__(self):
+	        self.funcs = {}
+	    
+	    def __get__(self, obj, cls):
+	        # для имитации метода объект этого типа 
+	        # должен быть свойством
+	        def closure(val):
+	            return self.funcs[type(val).__name__](obj, val)
+	        return closure
+	    
+	    def add(self, func):
+	        # добавляем новую функцию-обработчик
+	        tp_name = func.__doc__.strip().split('\n')[0]
+	        self.funcs[tp_name] = func
+
+	    # использование в предыдущем посте
+
+	Поскольку тело класса исполняется то трассировщик может "видеть" как в него добавляются
+новые методы или подменяются старые и использовать эту информацию что-бы произвести
+перегрузку функций. На всякий случай - код класса исполняется только один раз - при 
+импорте текущего модуля. По выходу из создания класса трассировка выключается и не
+оказывает никакого влияния на его инстанцирование или вызов методов.
+ 
+	Этот код можно расширить до перегрузки функций (не методов) и добавить поддержку
+нескольких параметров. 
+	
+	Идея с использованием трассировки для расширения синтаксиса была реализована
+как минимум в одной широко известной библиотеке - [PEAK.util.decorator]. Она позволяет использовать
+декораторы в python до 2.4.
+
+linklist:
+	PEAK.util.decorator http://pypi.python.org/pypi/DecoratorTools
+
+
+
+

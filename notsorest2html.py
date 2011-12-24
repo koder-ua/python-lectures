@@ -16,7 +16,8 @@ from pygments.lexers import PythonLexer, \
                             CLexer, \
                             XmlLexer, \
                             PythonTracebackLexer, \
-                            PythonConsoleLexer
+                            PythonConsoleLexer, \
+                            BashSessionLexer
 
 from pygments.formatters import HtmlFormatter
 
@@ -61,8 +62,8 @@ assert re_striked2.match('-b-')
 assert re_striked1.search(' -b-')
 assert re_striked1.search(' -b- ')
 
-re_backref = re.compile(ur"""(?u)\[\s*([- \w.|'"]+?)\s*\]""")
-re_href = re.compile(r"(?u)(?P<name>\[\s*([- _a-zA-Z/.]+)\s*\])?(?P<proto>https?://)(?P<url>.*?)(?=\s|$)")
+re_backref = re.compile(ur"""(?u)\[\s*([- \w.|()'"]+?)\s*\]""")
+re_href = re.compile(r"(?u)(?P<name>\[\s*([- _\w/.()|]+)\s*\])?(?P<proto>https?://)(?P<url>.*?)(?=\s|$)")
 
 class NotSoRESTHandler(object):
     def __init__(self, opts):
@@ -186,18 +187,26 @@ def check_python_code(code, line, use_lint=True, imp_mod=False):
     open(fname, 'w').write(code)
 
     try:
+        if use_lint:
+            rep = Reporter()
 
-        rep = Reporter()
+            try:
+                stderr = sys.stderr
+                sys.stderr = Stdout_replacer()  
+                logilab.astng.builder.MANAGER.astng_cache.clear()
+                rcfile = os.path.join(os.path.abspath(os.path.dirname(__file__)), "pylintrc")
+                lint.Run( [fname, '--rcfile=' + rcfile], rep, exit=False)
+                #lint.PyLinter( [fname], rep)
+            finally:
+                sys.stderr = stderr
 
-        try:
-            stderr = sys.stderr
-            sys.stderr = Stdout_replacer()  
-            logilab.astng.builder.MANAGER.astng_cache.clear()
-            rcfile = os.path.join(os.path.abspath(os.path.dirname(__file__)), "pylintrc")
-            lint.Run( [fname, '--rcfile=' + rcfile], rep, exit=False)
-            #lint.PyLinter( [fname], rep)
-        finally:
-            sys.stderr = stderr
+            for tp, data, msg in rep.messages:
+                if tp not in ('C0111',):
+                    if tp == 'W0611' and msg == "Unused import ok":
+                        continue
+                    print "Python block in line {0}: {1} {2}".format(
+                            line + data[3] - 2, # we add two lines to the top og the file
+                            tp, msg)
         
         if imp_mod:
             try:
@@ -208,14 +217,6 @@ def check_python_code(code, line, use_lint=True, imp_mod=False):
             finally:
                 del sys.path[0]
                 del sys.modules['module']
-
-        for tp, data, msg in rep.messages:
-            if tp not in ('C0111',):
-                if tp == 'W0611' and msg == "Unused import ok":
-                    continue
-                print "Python block in line {0}: {1} {2}".format(
-                        line + data[3] - 2, # we add two lines to the top og the file
-                        tp, msg)
 
     finally:    
         os.unlink(fname)
@@ -232,7 +233,7 @@ hide_show_span = '<span {default_style} id="{hided_id}">'
 hide_show2 = '<a hided_text="{hided_text}" ' + \
             'visible_text="{visible_text}" ' + \
             'style="border-bottom: 2px dotted #2020B0; ' + \
-                    'color: #2020B0; font-style:italic; font-size: 80%" ' + \
+                    'color: #2020B0; font-style:italic; font-size: 90%" ' + \
             'class="dhidder" objtohide1="{hided_id1}" objtohide2="{hided_id2}" >{default_text}</a>'
 
 class BlogspotHTMLProvider(NotSoRESTHandler):
@@ -242,6 +243,9 @@ class BlogspotHTMLProvider(NotSoRESTHandler):
     def __init__(self, opts):
         self.refs = []
         self.href_map = {}
+        self.backref_list = []
+        self.found_splitter = False
+
         super(BlogspotHTMLProvider, self).__init__(opts)
 
         if self.opts.standalone:
@@ -296,6 +300,12 @@ class BlogspotHTMLProvider(NotSoRESTHandler):
     def end_style(self, style):
         self.write_raw('</span>')
 
+    def on_open_center(self):
+        self.write_raw("<center>")
+
+    def on_close_center(self):
+        self.write_raw("</center>")
+
     def on_text(self, block, no_para=False):
         if block != "":
             if not no_para:
@@ -308,6 +318,7 @@ class BlogspotHTMLProvider(NotSoRESTHandler):
     
     def on_cut(self, block):
         self.write_raw("<!--more-->")
+        self.found_splitter = True
 
     def on_raw(self, block):
         self.write_raw('<pre><font face="courier">' + 
@@ -320,6 +331,7 @@ class BlogspotHTMLProvider(NotSoRESTHandler):
     highlighters_map['xml'] = XmlLexer
     highlighters_map['traceback'] = PythonTracebackLexer
     highlighters_map['pyconsole'] = PythonConsoleLexer
+    highlighters_map['shell'] = BashSessionLexer
 
     def __getattr__(self, name):
         # handle all syntax hightlited blocks
@@ -335,8 +347,11 @@ class BlogspotHTMLProvider(NotSoRESTHandler):
 
                         use_lint = '-' not in opts
                         imp_mod = 'ut' in opts
-                        
-                        check_python_code(code, line, use_lint=lint, imp_mod=imp_mod)
+
+                        if use_lint and self.opts.nolint:
+                            use_lint = False
+
+                        check_python_code(code, line, use_lint=use_lint, imp_mod=imp_mod)
                     
                     splits = re.split(r"\n#----*\n", code)
 
@@ -363,7 +378,8 @@ class BlogspotHTMLProvider(NotSoRESTHandler):
                     self.write_raw(hblock.strip())
                     self.write_raw("</span>")
 
-                    self.write_raw(hide_show_span.format(hided_id=oid_raw, default_style='style="font-size:120%;display:none"'))
+                    self.write_raw(hide_show_span.format(hided_id=oid_raw, 
+                                        default_style='style="font-size:110%;display:none"'))
                     self.on_raw(raw)
                     self.write_raw("</span>")
 
@@ -388,10 +404,11 @@ class BlogspotHTMLProvider(NotSoRESTHandler):
 
     def on_img(self, url):
         url = url.strip()
+        iwith = self.block_opts.get('with','700')
         if url.endswith('svg'):
             self.write_raw('<object data="{0}" type="image/svg+xml"></object>'.format(url)) 
         else:
-            self.write_raw('<br><img src="{0}" width="740" /><br>'.format(url))
+            self.write_raw('<br><img src="{0}" width="{1}" /><br>'.format(url, iwith))
 
     def do_href(self, ref_descr):        
         self.write_raw(
@@ -442,14 +459,16 @@ class BlogspotHTMLProvider(NotSoRESTHandler):
 
     def process_backref(self, ref_descr):
         gr1 = ref_descr.group(1)
-        #return '<a href="#{0}">{1}</a>'.format(
-        #            escape_html(gr1.replace(' ', '_')), 
-        #            escape_html(gr1))
+
         if '|' in gr1:
             name, text = gr1.split('|', 1)
         else:
             text = name = gr1
+
         name = name.replace(' ', '_')
+        
+        self.backref_list.append(name)
+
         return u'<a href="{0}">{1}</a>'.format(self.HREF_PREFIX + name, text)
                
     def process_href(self, mobj):
@@ -476,6 +495,9 @@ class BlogspotHTMLProvider(NotSoRESTHandler):
         return u'<a href="{0}">{1}</a>{2}'.format(url, name, add_symbol)
 
     def finalize(self):
+        if not self.found_splitter:
+            print "WARNING: no text splitter found!"
+
         self.write_raw('<p style="text-indent:20px">')
         self.write_raw(u'Исходники этого и других постов со скриптами лежат тут - ')
         self.do_href("[github.com/koder-ua]https://github.com/koder-ua/python-lectures.")
@@ -489,6 +511,15 @@ class BlogspotHTMLProvider(NotSoRESTHandler):
             self.write_raw("</body></html>")
 
         res = self.get_result()
+
+        found_refs = set(self.href_map.keys())
+        used_refs = set(self.backref_list)
+
+        diff = used_refs - found_refs
+
+        if len(diff) != 0:
+            print "ERROR: backerfs {0} have no links".format(
+                        ",".join(i.encode('utf8') for i in diff))
 
         for name, val in self.href_map.items():
             res = res.replace(self.HREF_PREFIX + name, val)
@@ -555,6 +586,7 @@ def main(argv=None):
     parser.add_option("-s", "--style-files", dest='style_files', default='__def__')
     parser.add_option("-o", "--output-file", dest='output_file', default=None)
     parser.add_option("-f", "--format", dest='format', default='blogspot')
+    parser.add_option("-n", "--nolint", dest='nolint', default=False, action='store_true')
     parser.add_option("-a", "--standalone", dest='standalone', default=False,
                         action='store_true')
     

@@ -495,7 +495,7 @@ raw:
 
 linklist:
 
-	PEP-0343 http://www.python.org/dev/peps/pep-0343/
+	PEP-343 http://www.python.org/dev/peps/pep-0343/
 	with http://docs.python.org/reference/compound_stmts.html#the-with-statement
 	xmlbuilder https://github.com/koder-ua/megarepo/tree/master/xmlbuilder/xmlbuilder
 	mock http://www.voidspace.org.uk/python/mock/compare.html#mocking-a-context-manager

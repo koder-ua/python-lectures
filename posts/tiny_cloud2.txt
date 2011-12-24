@@ -1,0 +1,649 @@
+=================================================
+libvirt & Co. Облако "на коленке". Часть 2 - Сети
+=================================================
+
+
+Компоненты
+==========
+
+	Функционирование виртуальных сетей обеспечивается различными технологиями, 
+которые я бегло опишу:
+
+	[bridges] - сетевые мосты программные аналоги свичей, позволяют соединить
+вместе несколько сетевых интерфейсов и передавать между ними пакеты, как если 
+бы они были включены в один свич. Бриджи управляются с помощью команды
+'brctl':
+
+shell:
+	$ brctl  show  # напечатать все бриджи с подключенными интерфейсами
+	bridge name     bridge id               STP enabled interfaces                                                                 
+    virbr0          8000.000000000000       yes                      
+
+    # brctl add <name>     - добавить бридж
+    # brctl addif <brname> <ifname>      - включить eth в бридж
+    # brctl delif <brname> <ifname>      - отключить интерфейс
+    # brctl delbr <brname>               - удалить бридж
+ 
+	Перед работой с бриджами лучше ознакомиться с документацией, они содержат
+некоторое количество нетривиальных моментов. 
+
+<------------------------------------------------------------------------------>
+
+	[tun] ([tap]) - виртуальные сетевые интерфейсы. В отличии от аппаратных 
+привязаны к определенному процессу пользовательского режима, а не к сетевой 
+карте. Родительский процесс может писать/читать данные из виртуального 
+интерфейса имитируя работу сети. В остальном они не отличаются от обычных
+интерфейсов. С помощью tun/tap работают многие VNP программы, например openvpn,
+которая создает tun/tap, вычитывает из него данные, шифрует и переправляет по 
+обычной сети на другой компьютер, где второй процесс openvpn принимает
+данные, расшифровывает и записывает в свой tun/tap, имитируя прямое сетевое 
+соединение между удаленными компьютерами. Как и 95% всех сетевых возможностей 
+linux tun/tap можно управлять с помошью утилиты ip. Пример использования tun из
+python можно найти тут [kharkovpromenade]. Tun используются для создания сетевых
+интерфейсов виртуальынх машин.
+
+	[iptables] - система управления сетевым трафиком в linux. Обеспечивает 
+фильтрация и модификацию трафика, управление сетевыми соединениями, etc.
+Возможности iptables чрезвычайно обширные и описывать даже примерно я их не 
+буду, приведу только команды, позволяющие увидеть все правила на компьютере:
+	
+shell:
+	# iptables -t nat -S
+	# iptables -t filter -S
+	# iptables -t raw -S
+	# iptables -t mangle -S
+
+Все правила легко читаются даже без знания iptables.
+
+	Ок, с этим багажом уже можно разбираться с виртуальными сетями. Для большинства
+случаев нам не придется делать сети самостоятельно - libvirt берет эту работу на себя,
+предоставляя нам готовый [результат]. Начнем с устройства простейшей сети, которую со 
+старта создает libvirt - defaults. 
+
+shell:
+	# virsh net-list
+	Name                 State      Autostart
+	-----------------------------------------
+	default              active     yes	
+
+Описание этой сети можно получить с помощью следующих команд:
+
+shell:
+	# virsh net-info default
+
+	Name            default
+	UUID            c598e36f-31fd-672e-09e3-2cbe061cd606
+	Active:         yes
+	Persistent:     yes
+	Autostart:      yes
+	Bridge:         virbr0
+
+	# virsh net-dumpxml default
+
+xml:
+	<network>
+	  <name>default</name>
+	  <uuid>c598e36f-31fd-672e-09e3-2cbe061cd606</uuid>
+	  <forward mode='nat'/>
+	  <bridge name='virbr0' stp='on' delay='0' />
+	  <ip address='192.168.122.1' netmask='255.255.255.0'>
+	    <dhcp>
+	      <range start='192.168.122.40' end='192.168.122.254' />
+	    </dhcp>
+	  </ip>
+	</network>
+
+Тот же самый результат можно получить и из python:
+
+python:
+	import libvirt
+	from xml.etree.ElementTree import fromstring
+
+	conn = libvirt.open("qemu:///system")
+	net = conn.networkLookupByName('default')
+	xml = fromstring(net.XMLDesc(0))
+	print "default net addr =", xml.find('ip').attrib['address']
+	print "default net mask =", xml.find('ip').attrib['netmask']
+	print "default net bridge =", xml.find('bridge').attrib['name']
+
+Еще один важный компонент сети - dnsmasq:
+
+shell:
+	$ ps aux | grep dnsmasq | grep -v grep
+		nobody    4503  0.0  0.0  25836   976 ?        S    02:08   0:00 
+		dnsmasq --strict-order --bind-interfaces 
+				--pid-file=/var/run/libvirt/network/default.pid 
+				--conf-file= --except-interface lo 
+				--listen-address 192.168.122.1 
+				--dhcp-range 192.168.122.40,192.168.122.254 
+				--dhcp-leasefile=/var/lib/libvirt/dnsmasq/default.leases 
+				--dhcp-lease-max=215 --dhcp-no-override
+
+Конфигурационные файлы сетей хранятся в /var/lib/libvirt/network:
+
+shell:
+	$ ls -l /var/lib/libvirt/network/
+	total 4
+	-rw-r--r-- 1 root root 543 2011-12-24 02:08 default.xml
+
+Итак - что получилось в итоге. Вот эта строка конфигурационного файла:
+
+xml:
+    <interface type="network">
+        <source network="default" /> <!-- эта девушка! -->
+        <forward mode="nat" />
+        <target dev="vnet7" />
+        <mac address="{mac}" />
+    </interface>
+	
+
+	Подключила eth0 нашей виртуальной машины к бриджу 'virbr0' сети 'default'.
+Эта сеть имеет маску 192.168.122.0/24, подключена через [NAT] к внешнему миру
+и обслуживается dhcp сервером. Причем сам virbr0 имеет ip 192.168.122.1 и служит
+гейтом для этой сети. Адреса из диапазона 192.168.122.2-192.168.122.40 я ранее 
+зарезервировал для ручного распределения, отредактировав и перезапустив сеть.
+
+	Теперь вернемся к начальному вопросу - как программно узнать ip адрес, выданный
+нашей виртуалке? Есть три основных способа:
+
+* Если с виртуальной машиной уже был обмен данными, то можно посмотреть в кеше 
+  маршрутизации ''ip route show cache | grep virbr0'' или в кеше аппаратных адресов -
+  ''arp -na''. Способ наименее надежный, так как если обмена не было кеши будут пустые.
+
+* Достать информацию из базы dhcp сервера - leases. Для dnsmasq это по умолчанию файл
+  /var/lib/libvirt/dnsmasq/default.leases: 
+
+shell:
+	$ cat /var/lib/libvirt/dnsmasq/default.leases
+	1324718340 00:44:01:61:78:01 192.168.122.99 * *
+
+	В принципе это уже что-то, но такой способ зависимый от многих факторов - в других
+дистрибутивах или при других настройках путь к файлу может поменяться, виртуальная
+машина может использовать другой dhcp сервер или вообще иметь статический ip адрес.
+
+* Получить адрес с помощью arp сканирования. Фактически в сеть посылается набор запросов
+  вида "у кого есть такой ip addres". Этот запрос используется что-бы определить mac 
+  адрес машины с заданным ip, перед формирование ethernet фрейма. Способ наиболее
+  универсальный, поскольку именно так работает tcp/ip стек - независимо от того
+  как система получила этот ip адрес она должна ответить на arp запрос или
+  будет вообще недоступна для ip протокола.
+
+shell:
+	# arp-scan -I virbr0 -l # использовать маску сети из описания интерфейса
+	# arp-scan -I virbr0 192.168.122.0/24 # то же самое, только руками
+
+	Interface: virbr0, datalink type: EN10MB (Ethernet)
+	Starting arp-scan 1.8.1 with 256 hosts (http://www.nta-monitor.com/tools/arp-scan/)
+	192.168.122.99  00:44:01:61:78:01       (Unknown)
+
+	1 packets received by filter, 0 packets dropped by kernel
+	Ending arp-scan 1.8.1: 256 hosts scanned in 1.374 seconds (186.32 hosts/sec). 1 responded
+
+Собственно 192.168.122.99 это и есть наш ip адрес (у вас он, естественно, может быть другим).	
+
+shell:
+	$ ip addr show virbr0
+	5: virbr0: <NO-CARRIER,BROADCAST,MULTICAST,UP> mtu 1500 qdisc noqueue state DOWN 
+	    link/ether ca:8e:0a:8b:36:14 brd ff:ff:ff:ff:ff:ff
+	    inet 192.168.122.1/24 brd 192.168.122.255 scope global virbr0
+
+
+	Сделаем то же самое на python с помощью [scapy]. Scapy вообще очень мощная библиотека
+для сетевых манипуляций, см. например [scapy-traceroute].
+
+python:
+	# -*- coding:utf8 -*-
+	# для разбора/преобразования ip адресов
+
+	import ipaddr
+
+	from scapy.all import srp, Ether, ARP, conf
+
+	# scapy в основном ориентированна на интерактивное использование 
+	# и по умолчанию выводит много информации в sys.stdout
+	# запретим это
+	conf.verb = 0
+
+	def arp_scan(ip_addr, netmask, iface):
+	    
+	    netsize = ipaddr.IPNetwork("{0}/{1}".format(ip_addr, netmask)).prefixlen 
+
+	    ans, unans = srp(
+	                Ether(dst="ff:ff:ff:ff:ff:ff") / \
+	                    ARP(pdst="{0}/{1}".format(ip_addr, netsize)),
+	                     timeout=0.1, iface=iface)
+
+	    for request, responce in ans:
+	        yield responce.payload.fields['hwsrc'], responce.payload.fields['psrc']
+
+	for hw_addr, ipaddr in arp_scan('192.168.122.2', '255.255.255.0', 'virbr0'):
+	    print "{0} => {1}".format(hw_addr, ipaddr)
+
+	Теперь осталось объединить все это вместе - нам нужна функция, которая по 
+имени виртуальной машины выдаст все ее ip адреса:
+
+
+hide.python:
+	# -*- coding:utf8 -*-
+	# tiny_network.py
+
+	from xml.etree.ElementTree import fromstring
+
+	# для разбора/преобразования ip адресов
+	import ipaddr
+
+	from scapy.all import srp, Ether, ARP, conf
+
+	# scapy в основном ориентированна на интерактивное использование 
+	# и по умолчанию выводит много информации в sys.stdout
+	# запретим это
+	conf.verb = 0
+
+	def arp_scan(ip_addr, netmask, iface):
+	    
+	    netsize = ipaddr.IPNetwork("{0}/{1}".format(ip_addr, netmask)).prefixlen 
+
+	    ans, unans = srp(
+	                Ether(dst="ff:ff:ff:ff:ff:ff") / \
+	                    ARP(pdst="{0}/{1}".format(ip_addr, netsize)),
+	                     timeout=0.1, iface=iface)
+
+	    for request, responce in ans:
+	        yield responce.payload.fields['hwsrc'], responce.payload.fields['psrc']
+
+	# получаем все ip адреса домена vm
+	# conn - соединение с libvirt
+
+	def get_all_ips(conn, vm):
+	    # xml описание vm
+
+	    xml = vm.XMLDesc(0)
+	    x = fromstring(xml)
+
+	    # находим все сетевые интерфейсы
+	    for xml_iface in x.findall("devices/interface"):
+
+	        # получаем их параметры
+	        netname = xml_iface.find('source').attrib['network']
+	        lookup_hwaddr = xml_iface.find('mac').attrib['address']
+
+	        # получаем параметры сети
+	        net = conn.networkLookupByName(netname)
+	        xml = fromstring(net.XMLDesc(0))
+	        attrs = xml.find('ip').attrib
+
+	        addr = attrs['address']
+	        netmask = attrs['netmask']
+	        br_name = xml.find('bridge').attrib['name']
+
+	        # сканируем сеть в поисках нашего аппаратного адреса
+	        for hw_addr, ip_addr in arp_scan(addr, netmask, br_name):
+	            if hw_addr == lookup_hwaddr:
+	                yield netname, br_name, hw_addr, ip_addr
+
+	def main():
+	    import sys
+	    import libvirt
+	    
+	    conn = libvirt.open(sys.argv[1])
+	    vm = conn.lookupByName(sys.argv[2])
+
+	    for netname, br_name, hwaddr, ipaddr in get_all_ips(conn, vm):
+	        print netname, br_name, hwaddr, ipaddr
+
+	if __name__ == "__main__":
+	    main()
+
+shell:
+	# python test.py qemu:///system debian
+	WARNING: No route found for IPv6 destination :: (no default route?)
+	default virbr0 00:44:01:61:78:01 192.168.122.99
+	# ssh root@192.168.122.99
+	blah-blah-blah
+
+	root@debian-amd64:~#
+
+	Отлично. Имея доступ по ssh мы уже может делать с vm что нам нужно.
+Добавим в tiny_cloud.py автоматический логин в vm по имени. Для этого 
+воспользуемся утилитой [expect] 
+
+shell:
+	# apt-get install expect
+
+python:
+	expect_login = """expect -c'
+	spawn ssh {0}@{1};
+	while {{1}} {{
+	  expect {{
+	    eof                          {{ break }};
+	    "The authenticity of host"   {{ send "yes\n" }};
+	    "password:"                  {{ send "{2}\n"; interact; break;}};
+	  }};
+	}};
+	wait'
+	"""
+
+    found = False
+    for ipaddr in get_all_ips(conn, name):
+    	
+    	# проверяем, что ssh порт открыт на этом ip
+        s = socket.socket()
+        s.settimeout(1)
+        
+        try:
+            s.connect((ipaddr, 22))
+        except socket.error:
+            raise
+        
+        # запускаем ssh и ждем пока пользователь завершит сеанс
+
+        os.system(expect_login.format(user, ipaddr, passwd))
+        found = True
+        break
+    
+    if not found:
+        raise RuntimeError("No one interface of {0} accepts ssh connection".format(name))
+	
+	Для серьезного использования написанный сетевой код необходимо 
+дорабатывать, что-бы он мог обрабатывать другие варианты сетей, но для
+домашнего использования сойдет.
+	
+	Возможности libvirt по управлению сетями очень обширны и описаны в документации,
+в частности libvirt умеет создавать NAT сети, сети с прямым подключением к lan, 
+не подключенные к lan сети и проброс портов. Для основных задач этого вполне хватает.
+Как я уже говорил при этом libvirt делает всю низкоуровневую работу самостоятельно,
+предоставляя нам готовые сети.
+
+	В качестве примера сделаем сеть из 3х виртуалок, две из которых будут
+в не подсоединенной напрямую к lan сети 'local_net', а третья одним интерфейсом в 'default',
+а вторым в 'local_net'.
+	
+	Для этого нужно немного подправить образ. Логинимся в vm и удаляем файлы 
+/etc/udev/rules.d/70-persistent-net.rules и /etc/udev/rules.d/010_netinterfaces.rules.
+В противном случае debian будет переименовывать сетевые интерфейсы
+при смене аппаратного адреса. Выполняем 'poweroff', отлогиниваемся и ждем
+пока vm остановится - python tiny_cloud.py list перестанет ее показывать и
+сделаем три копии образа vm - deb1.qcow2, deb2.qcow2, deb3.qcow2.
+
+	Сделаем новую сеть, для этого определим ее в [xml формате для сети]
+
+hide.xml:
+	<?xml version="1.0" encoding="utf-8" ?>
+	<network>
+	  <name>local_net</name>
+	  <bridge name="virbr2" />
+	  <ip address="192.168.152.1" netmask="255.255.255.0">
+	    <dhcp>
+	      <range start="192.168.152.2" end="192.168.152.254" />
+	    </dhcp>
+	  </ip>
+	</network>
+	
+Зарегистрируем ее в libvirt и активируем:
+
+shell:
+	# virsh net-define local_net.xml
+	# virsh net-list --all
+	Name                 State      Autostart
+	-----------------------------------------
+	default              active     yes       
+	local_net            inactive   no
+	# virsh net-start local_net
+	# virsh net-list
+	Name                 State      Autostart
+	-----------------------------------------
+	default              active     yes       
+	local_net            active     no	
+
+	Проверяем, что все запустилось - в системе должно быть два dnsmasq сервера
+и должен добавить virbr2 мост, но правила для NAT не должны появиться в таблице filter.
+Обратите внимание - local_net не будет запускаться автоматически при старте компьютера, 
+ее нужно активировать после каждого перезапуска перед стартом соответствующих vm 
+или выполнить 
+
+shell:
+	# virsh net-autostart local_net
+
+	Модифицируем шаблоны для vm - делаем две копии
+vm_templ.xml. В первой копии меняем сеть назначения для интерфейса 
+на 'local_net', во второй добавляем еще один интерфейс, направленный 
+на 'local_net'. Так-же уменьшим объем оперативной памяти до 256М.
+
+hide.xml:
+	<!-- в vm_2if_templ.xml -->
+    <interface type="network">
+        <source network="default" />
+        <forward mode="nat" />
+        <mac address="{mac1}" />
+    </interface>
+    <interface type="network">
+        <source network="local_net" />
+        <mac address="{mac2}" />
+    </interface>
+
+	<!-- в vm_local_net_templ.xml -->
+    <interface type="network">
+        <source network="local_net" />
+        <mac address="{mac}" />
+    </interface>
+	
+Запускаем систему:
+
+shell:
+	# python tiny_cloud.py start --name deb1 --template vm_2if_templ.xml
+	# python tiny_cloud.py start --name deb2 --template vm_local_net_templ.xml 
+	# python tiny_cloud.py start --name deb3 --template vm_local_net_templ.xml 
+	# python tiny_cloud.py list
+    
+    5 deb3
+    4 deb2
+    3 deb1
+
+Немного модифицируем tiny_cloud.py, что-бы он показывал ip адреса виртуалок.
+
+shell:
+	# python tiny_cloud.py list
+    5 deb3 192.168.152.63
+    4 deb2 192.168.152.62
+    3 deb1 192.168.122.99,192.168.152.64
+
+	Логинимся в deb1, смотрим на интерфейсы, проверяем, что 8.8.8.8(google DNS),
+deb2 и deb3 пингуются. Логинимся в deb2, проверяем что deb1 и deb3 пингуются, а
+8.8.8.8 - нет.
+
+	Код tiny_cloud.py со всеми сегодняшними добавками:
+
+hide.python:
+	import os
+	import sys
+	import socket
+	import argparse
+
+	from xml.etree.ElementTree import fromstring
+
+	import libvirt
+
+	import ipaddr
+	from scapy.all import srp, Ether, ARP, conf
+	conf.verb = 0
+
+
+	vm_sets = \
+	{
+	    'ubuntu' :
+	    {
+	        'vcpu' : 1, 
+	        'mem'  : 1024 * 1024, # 1Gb RAM
+	        'mac'  : "00:44:01:61:78:01",
+	        'image_file' : '/home/koder/vm_images/ubuntu-server-nova-1.qcow2'
+	    },
+	    'debian' :
+	    {
+	        'vcpu' : 1, 
+	        'mem'  : 1024 * 1024, # 1Gb RAM
+	        'mac'  : "00:44:01:61:78:01",
+	        'image_file' : '/home/koder/vm_images/debian_squeeze_amd64_standard.qcow2'
+	    },
+	    'deb1' :
+	    {
+	        'vcpu' : 1, 
+	        'mem'  : 256 * 1024, # 256M RAM
+	        'mac1'  : "00:44:01:61:78:02",
+	        'mac2'  : "00:44:01:61:78:05",
+	        'image_file' : '/home/koder/vm_images/deb1.qcow2',
+	    },
+	    'deb2' :
+	    {
+	        'vcpu' : 1, 
+	        'mem'  : 256 * 1024, # 256M RAM
+	        'mac'  : "00:44:01:61:78:03",
+	        'image_file' : '/home/koder/vm_images/deb2.qcow2',
+	    },
+	    'deb3' :
+	    {
+	        'vcpu' : 1, 
+	        'mem'  : 256 * 1024, # 256M RAM
+	        'mac'  : "00:44:01:61:78:04",
+	        'image_file' : '/home/koder/vm_images/deb3.qcow2',
+	    }
+	}
+
+
+	def arp_scan(ip_addr, netmask, iface):
+	    
+	    netsize = ipaddr.IPNetwork("{0}/{1}".format(ip_addr, netmask)).prefixlen 
+
+	    ans, unans = srp(
+	                Ether(dst="ff:ff:ff:ff:ff:ff") / \
+	                    ARP(pdst="{0}/{1}".format(ip_addr, netsize)),
+	                     timeout=0.1, iface=iface)
+
+	    for request, responce in ans:
+	        yield responce.payload.fields['hwsrc'], responce.payload.fields['psrc']
+	    
+
+	expect_login = """expect -c'
+	spawn ssh {0}@{1};
+	while {{1}} {{
+	  expect {{
+	    eof                          {{ break }};
+	    "The authenticity of host"   {{ send "yes\n" }};
+	    "password:"                  {{ send "{2}\n"; interact; break;}};
+	  }};
+	}};
+	wait'
+	"""
+
+	class TinyCloud(object):
+	    def __init__(self, conn):
+	        self.conn = conn
+
+	    def start_vm(self, template, vmname):
+	        vm_xml_templ = open(template).read()
+	        vm_xml = vm_xml_templ.format(vmname=vmname, **vm_sets[vmname])
+	        self.conn.createXML(vm_xml, 0)
+
+	    def stop_vm(self, vmname):
+	        vm = self.conn.lookupByName(vmname)
+	        vm.shutdown()
+
+	    def list_vms(self):
+	        for domain_id in self.conn.listDomainsID():
+	            yield self.conn.lookupByID(domain_id)
+	    
+	    def get_network_data(self, name):
+	        net = self.conn.networkLookupByName(name)
+	        xml = fromstring(net.XMLDesc(0))
+	        attrs = xml.find('ip').attrib
+	        return xml.find('bridge').attrib['name'], attrs['address'], attrs['netmask']
+
+	    def get_all_ips(self, vmname):
+	        vm = self.conn.lookupByName(vmname)
+	        
+	        xml = vm.XMLDesc(0)
+
+	        xml_desc = fromstring(xml)
+
+	        for xml_iface in xml_desc.findall("devices/interface"):
+	            netname = xml_iface.find('source').attrib['network']
+	            lookup_hwaddr = xml_iface.find('mac').attrib['address']
+
+	            br_name , addr, netmask = self.get_network_data(netname)
+
+	            for hwaddr, ipaddr in arp_scan(addr, netmask, br_name):
+	                if hwaddr == lookup_hwaddr:
+	                    yield ipaddr
+
+	    def login_to_vm(self, name, user='root', passwd='root'):
+	        find = False
+	        for ipaddr in self.get_all_ips(name):
+	            s = socket.socket()
+	            s.settimeout(1)
+	            
+	            try:
+	                s.connect((ipaddr, 22))
+	            except socket.error:
+	                raise
+	            
+	            os.system(expect_login.format(user, ipaddr, passwd))
+	            find = True
+	            break
+	        
+	        if not find:
+	            raise RuntimeError("No one interface of {0} accepts ssh connection".format(name))
+
+
+	def main(argv=None):
+	    argv = argv if argv is not None else sys.argv
+
+	    parser = argparse.ArgumentParser()
+
+	    parser.add_argument('cmd', choices=('start', 'stop', 'list', 'login'))
+	    parser.add_argument('--name', choices=vm_sets.keys())
+	    parser.add_argument('--uri', default="qemu:///system")
+	    parser.add_argument('--template', default="vm_templ.xml")
+
+	    opts = parser.parse_args(argv[1:])
+
+	    cloud = TinyCloud(libvirt.open(opts.uri))
+
+	    if opts.cmd == 'start':
+	        cloud.start_vm(opts.template, opts.name)
+	    elif opts.cmd == 'stop':
+	        cloud.stop_vm(opts.name)
+	    elif opts.cmd == 'login':
+	        cloud.login_to_vm(opts.name)
+	    elif opts.cmd == 'list':
+	        for domain in cloud.list_vms():
+	            all_ips = ",".join(cloud.get_all_ips(domain.name()))
+	            print "{0:>5} {1} {2}".format(domain.ID(), domain.name(), all_ips)
+	    else:
+	        print >>sys.stderr, "Unknown cmd {0}".format(opts.cmd)
+	    return 0
+
+	if __name__ == "__main__":
+	    sys.exit(main(sys.argv))
+
+
+	Итого текущая версия кода позволяет поднимать виртуальные сети разнообразных 
+конфигураций. Пока это включает избыточное количество ручной работы -
+в следующий раз расмотрим работу с дисковыми образами и автоматизацию их модификации,
+что уменьшит количество нажатий кнопок для поднятия сетей и отдельных vm, а
+также позволит начать использовать уникальные для виртуализации возможности,
+недоступные для реальных серверов (или доступные с большим трудом).
+
+linklist:
+	bridges http://www.linuxfoundation.org/collaborate/workgroups/networking/bridge
+	tun http://backreference.org/2010/03/26/tuntap-interface-tutorial
+	tap http://en.wikipedia.org/wiki/TUN/TAP
+	kharkovpromenade http://kharkovpromenade.com.ua/?id=9
+	результат http://wiki.libvirt.org/page/Networking
+	xml формате для сети http://libvirt.org/formatnetwork.html
+	expect http://en.wikipedia.org/wiki/Expect
+	iptables http://en.wikipedia.org/wiki/Iptables
+	scapy http://www.secdev.org/projects/scapy/doc/
+	scapy-traceroute http://www.secdev.org/projects/scapy/doc/usage.html#tcp-traceroute-2
+	NAT http://en.wikipedia.org/wiki/Network_address_translation
+
+
+	

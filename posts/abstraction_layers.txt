@@ -24,13 +24,13 @@
 python:
 	class Messaging(object):
 		def send_message_async(self, dest, message_tp, message_data):
-			# some code
+			pass
 		
 		def send_message_sync(self, dest, message_tp, message_data):
-			# some code
+			pass
 
 		def get_message(self):
-			# some code
+			pass
 
 	Но программе не нужно посылать никакие сообщения! Ей нужно выполнить 
 действия - показать пользователю GUI, узнать завершился ли удаленный процесс,
@@ -103,7 +103,7 @@ python:
 	# Этот код не требует комментариев
 
 	for service in db.get_10_services(zone_id, service_id):
-		# some code
+		pass
 
 
 	# в файле db.py

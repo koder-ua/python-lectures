@@ -27,7 +27,7 @@ python:
    
     Во-первых опять нужно придумывать для каждого типа свои 
 имена функций, во-вторых не по-питоновски много лишних нажатий 
-клавиш, даже в С++ это - лишнее: "@when(pprint, ("  :).
+клавиш, даже в С++ это - лишнее: ''@when(pprint, (''  :).
 
 <------------------------------------------------------------------------------>
 	
@@ -74,7 +74,7 @@ python:
 Запускаем -
 
 raw:
-	.........$ python overload.py 
+	.........$ python tracer.py 
 	t.overloaded_func(1)         = Integer func called 1             
 	t.overloaded_func('asas')    = String func called 'asas'
 	t.overloaded_func(1.1)       = Float func called 1.1

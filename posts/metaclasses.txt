@@ -1,6 +1,6 @@
-		==========================================================
-		Метаклассы в python 2.X с примерами и полным разоблачением
-		==========================================================
+==========================================================
+Метаклассы в python 2.X с примерами и полным разоблачением
+==========================================================
 
 Теория, часть 1. Метаклассы
 ===========================
@@ -208,16 +208,16 @@ Raw:
 в метод, например:
 
 python:
-	a + b => a.__class__.__add__(a, b)
-	a.c => a.__class__.__getattr__(a, 'c')
+	a + b # => a.__class__.__add__(a, b)
+	a.c # => a.__class__.__getattr__(a, 'c')
 
 	# кроме этого a.__class__.__dict__ будет использован для 
 	# поиска атрибута 'c', если он не будет найден
 	# в a.__dict__. Вообще говоря поиск атрибута в объекте длинная 
 	# история - о ней будет своя статья
 	
-	str(a) => a.__str__(a)
-	iter(a) => a.iter(a)
+	str(a) # => a.__str__(a)
+	iter(a) # => a.iter(a)
 	
 	# и т.д.
 	
@@ -330,11 +330,13 @@ python:
 		provides_ui = 'qt'
 		def display_my_data(self, data):
 			#some qt code
+			pass
 		
 	class HTMLDataDisplayer(IDataGridUI):
 		provides_ui = 'html'
 		def display_my_data(self, data):
 			#some template code
+			pass
 
 	# в файле build_ui.py
 	from plugin_api import get_all_implementations
@@ -457,9 +459,11 @@ python:
 	    @classmethod
 	    def insert(cls, **fields):
 		    insert_request = "insert into {0} ({1}) values ({2})"
+		    
 		    values = ','.join(
 		    				repr(fields[fname]) 
-		    					for fname in cls._fields))
+		    					for fname in cls._fields)
+
 		    field_names = ','.join(cls._fields)
 
 		    cls.execute( 

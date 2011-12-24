@@ -1,0 +1,324 @@
+==========================================
+libvirt & Co. Облако "на коленке". Часть 1
+==========================================
+
+Buzzword
+========
+
+	[cloud|Облако(cloud)] это инфраструктура для управления виртуальными 
+машинами. Агенты облака устанавливаются на железных серверах, превращая их 
+единый мегасервер, которые используется для виртуализации. Облако должно уметь:
+
+* запускать группы виртуальных машин на базе загруженных в него образов
+* изменять образы виртуальных машин
+* управлять сетевой инфраструктурой - объединять виртуальные машины в 
+  ( возможно виртуальные ) локальные сети, настраивать правила доступа к 
+  этим сетям извне и доступ наружу из сетей
+* поддерживать остановку, приостановку и миграцию виртуалок
+* балансировать нагрузку на железные сервера
+* управлять местом на дисках
+* ..............
+
+Предисловие
+===========
+
+   	На сегодняшний день есть четыре основных облачных системы - перспективный и 
+активно развиваемый  [openstack], 
+рабочий но мало интересный из-за лицензии [eucalyptus], совсем-совсем 
+проприетарный [VMware vCloud] и очень-очень microsoft [azure]. Но это все "серьезные" 
+облака, а как это часто бывает большие системы не удобно использовать на малых 
+задачах. Я расскажу как управлять небольшими группами виртуальных машин 
+"малой кровью". Впрочем openstack использует эти же утилиты, а все остальные 
+узнают на чем основываются linux клауды.
+
+<-------------------------------------------------------------------------------->
+
+	Для описанных методик вам необходим Linux 2.6.26+ и процессор с поддержкой 
+виртуализации. Проверить это можно следующими командами: 
+
+shell:
+	$ cat /proc/cpuinfo | egrep 'vmx|svm'
+	$ cat /proc/cpuinfo | egrep 'rvi|ept'
+
+	Если первая команда ничего не вывела - вам не повезло, аппаратной поддержки 
+виртуализации у вас нет. Если обе команды выдали не пустой ответ - вам повезло 
+вдвойне - в вашем процессоре есть поддержка виртуализации таблицы страниц - это
+значительно ускоряет работу с памятью, фактически выводя ее на уровень сырого
+железа.
+
+	Вложенная аппаратная виртуализация не поддерживается, т.е. если linux 
+установлен в виртуальной машине, то описанные примеры работать не будут.
+Впрочем и те, кто запускает линукс в виртуалке и те, у кого нет поддержки виртуализации
+могут адаптировать эти примеры для использования [xen] c паравиртуализацией или
+[lxc] - эти техники не требуют аппаратной поддержки. В принципе ипользуемая [libvirt]
+имеет зачаточную поддержку windows, желающие могут попробовать и так.
+
+	Из других аппаратных требований желательно по-больше оперативной памяти (3Gb+) 
+и быстрый диск (SSD).
+На магнитном жестком диске все будет работать, но некоторые наиболее интересные 
+варианты организации виртульных образов заметно тормозят на дисковых операциях
+из-за большого количества разрозненных обращений.
+
+	Все примеры для Ubuntu 11.10, для других дистрибутивов нужно подправить
+обращения к пакетному менеджеру и пути к конфигам.
+
+libvirt
+=======
+
+	Хотя формально [libvirt] называется библиотекой, но это целая инфраструктура
+для управления виртуальными машинами. Она включает:
+
+* libvirt-bin демон с внешним API, управляющий виртуальными машинами
+* libvirt - библиотека для доступа к демону
+* masqdns - dns/dhcp сервер, используемый совместно с iptables, vlan и бриджами 
+  для управлением виртуальными сетями
+* virsh - клиент командной строки
+
+	libvirt предоставляет почти унифицированный интерфейс для работы с различными
+гипервизорами - поддерживаются [kvm], [lxc], [xen], vmware, hyper-v, [openvz],
+и другие - в общем почти все, что еще шевелится. При этом libvirt не пытается 
+подобрать общий знаменатель ко всем системам виртуализации, а  
+предоставляет полный набор возможностей каждого гипервизора - просто не все конфигурации 
+будут работать на всех системах виртуализаций. 
+
+	Для описания виртуальных машин, сетей и хранилищ libvirt использует xml,
+строки с которым выступают параметрами во всех основных функциях. Модель кажется 
+сначала странной, но после ближайшего рассмотрения понимаешь, что это очень
+яркий пример удачного использования [dependency injection]. 
+В 99% случаев программам которые используют libvirt все равно какая структура 
+каждой конкретной виртуальной машины. А при использовании внешних xml файлов
+их можно править не трогая код, при этом исходная программа будет(почти) 
+однообразно работать на всех поддерживаемых гипервизорах и с самыми разными 
+виртуальными машинами.
+
+	Итак начнем с самого простого - с запуска vm. Примеры кода будут на python,
+но все эти действия можно выполнить из командной строки с помощью 'virsh'. В
+качестве гипервизора будем использовать kvm. Он по умолчанию доступен в 
+современных Linux системах.
+	
+	Ставим необходимые пакеты:
+
+shell:
+	# apt-get install kvm qemu qemu-kvm qemu-common libvirt-bin libvirt0 python-libvirt
+	# modprobe kvm
+	# mkdprobe kvm-intel # kvm-amd
+
+	Выключаем apparmor/selinux. Желающие могут его настроить, но по умолчанию 
+они настроены криво:
+
+shell:
+    # service apparmor teardown
+    # service libvirt-bin stop
+    # service libvirt-bin start
+
+Выкачиваем образ [debian_vm] и делаем конфигурационный файл для нее:
+--меня запинали по поводу лишних элементов, пока в таком виде оставим--
+
+hide.xml:
+	<?xml version="1.0" encoding="utf-8" ?>
+	<!-- vm_templ.xml -->
+	<domain type="kvm">
+	    <name>{vm_name}</name>
+	    <memory>{mem}</memory>
+	    <uuid />
+	    <vcpu>{vcpu}</vcpu>
+	    <os>
+	        <type>hvm</type>
+	        <boot dev="hd" />
+	        <boot dev="cdrom" />
+	        <bootmenu enable="yes" />
+	        <bios useserial="yes" />
+	    </os>
+	    <clock sync="localtime" />
+	    <on_poweroff>destroy</on_poweroff>
+	    <on_reboot>restart</on_reboot>
+	    <on_crash>destroy</on_crash>
+	    <features>
+	        <acpi />
+	        <hap />
+	        <apic />
+	    </features>
+	    <devices>
+	        <emulator>/usr/bin/kvm</emulator>
+	        <disk device="disk" type="file">
+	            <driver name="qemu" type="qcow2" /> 
+	            <!-- подправить на нужный формат файла -->
+	            <source file="{image_file}" />
+	            <target bus="ide" dev="hda" />
+	        </disk>
+	        <interface type="network">
+	            <source network="default" />
+	            <forward mode="nat" />
+	            <target dev="vnet7" />
+	            <mac address="{mac}" />
+	        </interface>
+	        <serial type="pty">
+	            <target port="0" />
+	        </serial>
+	        <console type="pty">
+	            <target port="0" />
+	        </console>
+	        <input bus="ps2" type="mouse" />
+	        <graphics autoport="yes" keymap="en-us" port="-1" type="vnc" />
+	    </devices>
+	</domain>	
+
+Файл для запуска vm:
+
+python:
+	# tiny_cloud.py
+	import sys
+	import libvirt
+	
+	# соединяемся с libvirtd
+	uri = 'qemu://system'
+	conn = libvirt.open(uri)
+
+	vm_xml_templ = open(sys.argv[1]).read()
+
+	vm_xml = vm_xml_templ.format(vcpu=1, 
+						   mem=1024 * 1024, # 1Gb
+						   name=sys.argv[2],
+						   mac="00:44:01:61:78:01",
+						   image_file=sys.argv[3]
+						   )
+
+	# запускаем vm
+	conn.createXML(vm_xml, 0)
+
+Запускаем:
+
+shell:
+	# python tiny_cloud.py vm_templ.xml debian path_to_image
+
+Проверяем, что виртуалка запущенна:
+
+shell:
+	# virsh list	
+
+	 Id Name                 State
+	----------------------------------
+	  1 debian                 running
+
+    В принципе libvirt с помощью 'virsh' позволяет 
+регистрировать/запускать/останавливать виртуальные машины и без 
+использования python, но для более сложных задач bash не самый лучший
+язык программирования.
+
+	Виртуальные машины запущенные под управлением kvm являются обычными
+linux процессами, так что ими можно управлять в том числе с помощью стандартных 
+средств - ps, kill, nice, ionice, etc. Это так-же означает что работают все стандартные 
+системы мониторинга (htop/atop/iotop/sar) и другое, а 
+
+shell:
+	# ps aux | grep kvm
+
+	покажет командную строку, с помощью которой можно запустить vm не используя
+libvirt.
+
+	Продолжим с tiny_cloud.py - добавим останов виртуалки, разбор командной
+строки, etc.
+
+hide.python:
+	# tiny_cloud.py
+	import sys
+	import argparse
+
+	import libvirt
+
+	vm_sets = \
+	{
+	    'ubuntu' :
+	    {
+	        'vcpu' : 1, 
+	        'mem'  : 1024 * 1024, # 1Gb RAM
+	        'mac'  : "00:44:01:61:78:01",
+	        'image_file' : '/home/koder/vm_images/ubuntu-server-nova-1.qcow2'
+	    },
+	    'debian' :
+	    {
+	        'vcpu' : 1, 
+	        'mem'  : 1024 * 1024, # 1Gb RAM
+	        'mac'  : "00:44:01:61:78:01",
+	        'image_file' : 
+	        	'/home/koder/vm_images/debian_squeeze_amd64_standard.qcow2'
+	    }
+	}
+
+	class TinyCloud(object):
+	    def __init__(self, conn):
+	        self.conn = conn
+
+	    def start_vm(self, template, vmname):
+	        vm_xml_templ = open(template).read()
+	        vm_xml = vm_xml_templ.format(vmname=vmname, **vm_sets[vmname])
+	        self.conn.createXML(vm_xml, 0)
+
+	    def stop_vm(self, vmname):
+	        vm = self.conn.lookupByName(vmname)
+	        vm.destroy()
+
+	    def list_vms(self):
+	        for domain_id in self.conn.listDomainsID():
+	            yield self.conn.lookupByID(domain_id)
+
+	def main(argv=None):
+	    argv = argv if argv is not None else sys.argv
+
+	    parser = argparse.ArgumentParser()
+
+	    parser.add_argument('cmd', choices=('start', 'stop', 'list'))
+	    parser.add_argument('--name', choices=vm_sets.keys())
+	    parser.add_argument('--uri', default="qemu:///system")
+	    parser.add_argument('--template', default="vm_templ.xml")
+
+	    opts = parser.parse_args(argv[1:])
+
+	    cloud = TinyCloud(libvirt.open(opts.uri))
+
+	    if opts.cmd == 'start':
+	        cloud.start_vm(opts.template, opts.name)
+	    elif opts.cmd == 'stop':
+	        cloud.stop_vm(opts.name)
+	    elif opts.cmd == 'list':
+	        for domain in cloud.list_vms():
+	            print "{0:>5} {1}".format(domain.ID(), domain.name())
+	    else:
+	        print >> sys.stderr, "Unknown cmd {0}".format(opts.cmd)
+	    return 0
+
+	if __name__ == "__main__":
+	    sys.exit(main(sys.argv))
+
+	Для подключения к полученным виртуалкам можно использовать 
+ssh или vnc viewer. Для виртуалок, поднятых с помощью libvirt есть 
+удобный [virt-manager], который показывает все запущенные домены и позволяет
+подключится по vnc, что необходимо если сеть не загрузилась или на 
+образе не было ssh сервера.
+
+center.img[with=400]:
+	http://3.bp.blogspot.com/-9ORCk64v3Cc/TvPIAnLPeaI/AAAAAAAAAs8/eTEyeK5JGJE/s1600/debian_vm.png
+
+center.img[with=700]:
+	http://4.bp.blogspot.com/-hK7mqAUBaHA/TvPIA4_XV-I/AAAAAAAAAtI/8RjPCk4jztc/s1600/debian_vm_vnc.png
+
+	Первая проблема после запуска виртуалки - програмно определять ip, 
+который она получила. Для этого желательно разобраться с сетевой моделью 
+libvirt и вообще с основными сетевыми средствами linux, чему и будет
+посвящена следующая статья.
+
+linklist:  
+	debian-vm http://people.debian.org/~aurel32/qemu/amd64/debian_squeeze_amd64_standard.qcow2
+	cloud http://ru.wikipedia.org/wiki/%D0%9E%D0%B1%D0%BB%D0%B0%D1%87%D0%BD%D1%8B%D0%B5_%D0%B2%D1%8B%D1%87%D0%B8%D1%81%D0%BB%D0%B5%D0%BD%D0%B8%D1%8F
+	openstack http://openstack.org/
+	eucalyptus http://www.eucalyptus.com/
+	VMware vCloud http://www.vmware.com/solutions/cloud-computing/index.html
+	azure http://en.wikipedia.org/wiki/Azure_Services_Platform
+	kvm http://en.wikipedia.org/wiki/Kernel-based_Virtual_Machine
+	xen http://xen.org/
+	lxc http://lxc.sourceforge.net/
+	openvz http://wiki.openvz.org/Main_Page
+	libvirt http://libvirt.org/
+	dependency injection http://en.wikipedia.org/wiki/Dependency_injection
+	virt-manager http://virt-manager.org/
+	debian_vm http://people.debian.org/~aurel32/qemu/amd64/debian_lenny_amd64_standard.qcow2
