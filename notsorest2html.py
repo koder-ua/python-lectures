@@ -222,19 +222,19 @@ def check_python_code(code, line, use_lint=True, imp_mod=False):
         os.unlink(fname)
         os.rmdir(dname)
 
-hide_show = '<a hided_text="{hided_text}" ' + \
-            'visible_text="{visible_text}" ' + \
-            'style="border-bottom: 2px dotted #2020B0; ' + \
-                    'color: #2020B0; font-style:italic; font-size: 80%" ' + \
-            'class="hidder" objtohide="{hided_id}">{default_text}</a>'
+hide_show = u'<a hided_text="{hided_text}" ' + \
+            u'visible_text="{visible_text}" ' + \
+            u'style="border-bottom: 2px dotted #2020B0; ' + \
+                    u'color: #2020B0; font-style:italic; font-size: 90%" ' + \
+            u'class="hidder" objtohide="{hided_id}">{default_text}</a>'
 
 hide_show_span = '<span {default_style} id="{hided_id}">'
 
-hide_show2 = '<a hided_text="{hided_text}" ' + \
-            'visible_text="{visible_text}" ' + \
-            'style="border-bottom: 2px dotted #2020B0; ' + \
-                    'color: #2020B0; font-style:italic; font-size: 90%" ' + \
-            'class="dhidder" objtohide1="{hided_id1}" objtohide2="{hided_id2}" >{default_text}</a>'
+hide_show2 = u'<a hided_text="{hided_text}" ' + \
+             u'visible_text="{visible_text}" ' + \
+             u'style="border-bottom: 2px dotted #2020B0; ' + \
+                   u'color: #2020B0; font-style:italic; font-size: 90%" ' + \
+             u'class="dhidder" objtohide1="{hided_id1}" objtohide2="{hided_id2}" >{default_text}</a>'
 
 class BlogspotHTMLProvider(NotSoRESTHandler):
     
@@ -285,11 +285,12 @@ class BlogspotHTMLProvider(NotSoRESTHandler):
     
     def on_open_hide(self):
         oid = str(uuid.uuid1()).replace("-", "")
-        self.write_raw((hide_show + "<br>" + hide_show_span).format(hided_text="Show", 
-                                        visible_text="Hide",
+        self.write_raw((hide_show + "<br>" + hide_show_span).format(
+                                        hided_text=u"Показать код", 
+                                        visible_text=u"Скрыть код",
                                         hided_id=oid,
                                         default_style='style="display:none"',
-                                        default_text="Show"))
+                                        default_text=u"Показать код"))
 
     def on_close_hide(self):
         self.write_raw('</span>')
@@ -367,11 +368,11 @@ class BlogspotHTMLProvider(NotSoRESTHandler):
                     oid_raw = str(uuid.uuid1()).replace("-", "")
 
                     self.write_raw(
-                        hide_show2.format(hided_text="Hightlited/Raw", 
-                                          visible_text="Hightlited/Raw",
+                        hide_show2.format(hided_text=u"С подсветкой синтаксиса", 
+                                          visible_text=u"Без подсветки синтаксиса",
                                           hided_id1=oid_code,
                                           hided_id2=oid_raw,
-                                          default_text="Hightlited/Raw"))
+                                          default_text=u"Без подсветки синтаксиса"))
 
                     self.write_raw("<br>")
                     self.write_raw(hide_show_span.format(hided_id=oid_code, default_style=""))
@@ -379,7 +380,7 @@ class BlogspotHTMLProvider(NotSoRESTHandler):
                     self.write_raw("</span>")
 
                     self.write_raw(hide_show_span.format(hided_id=oid_raw, 
-                                        default_style='style="font-size:110%;display:none"'))
+                                        default_style='style="line-height:100%;display:none"'))
                     self.on_raw(raw)
                     self.write_raw("</span>")
 
