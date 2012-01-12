@@ -1,0 +1,439 @@
+============================================================
+libvirt & Co. Облако "на коленке". Часть 3 - Дисковые образы
+============================================================
+
+    Следующий шаг - разобраться с дисковыми образами виртуальных
+машин. Основные вопросы - как хранить, где хранить и как модифицировать.
+
+Как хранить
+===========
+
+* [raw] - самый простой формат, прямая копия данных с диска. 
+* [qcow2] - основной формат qemu. Обладает большим спектром возможностей
+* [vdi] - формат, используемый [VirtualBox|VirtualBox'ом]
+* [vmdk] -  [VMware] формат
+* cow, qcow - каменный век
+
+    Обсуждать [raw] смысла не имеет - просто диск байт по байту. qcow2 самый 
+распространенный и функциональный формат виртуальных дисков для qemu/xen.
+
+* содержит только те кластеры, в которые были записаны данные. Т.е. можно
+  создать образ диска размером в 10G, но реальный размер файла будет 
+  расти только при фактической записи на диск.
+
+<----------------------------------------------------------------------------->
+
+* поддерживает "наслоение" файлов. Qcow2 файл позволяет хранить только изменения
+  относительно другого файла, представляющего базовый образ (backing store).
+  При таком режиме базовый файл никогда не модифицируется - запись идет в 
+  "верхний" qcow2 файл, а чтение происходит из qcow2, если соответствующий
+  кластер был модифицирован и записан в qcow2 или из базового в противном случае. Это позволяет, 
+  например, запустить несколько виртуальных машин на основе одного образа.
+  После подготовки базового образа к нему подключается параллельно несколько
+  qcow2 файлов и на их основе запускаются vm, каждая из которых "идет своей дорогой".
+  Кроме экономии места на диске это также улучшает кеширование.
+  Поддерживается перенесение(commit) изменений назад в базовый файл и некоторые другие 
+  возможности. Базовый файл может быть в любом формате - raw, qcow2, etc.
+
+* шифрование
+
+* компрессия (только для чтения, запись будет производиться в распакованный сектор)
+
+* можно делать qcow2 файлы с пред выделенным местом для метаданных, это повышает 
+  быстродействие в случае если ожидаются интенсивные дисковые операции.
+
+Базовая утилита для работы с этими форматами - [qemu-img]. 
+
+shell:
+    ## создаем raw файл размером 10Gb
+    $ qemu-img create -f raw img.raw 10G 
+    Formatting 'img.raw', fmt=raw size=10737418240 
+    
+    ## создаем qcow2 файл размером 10Gb
+    $ qemu-img create -f qcow2 img.qcow2 10G 
+    Formatting 'img.qcow2', fmt=qcow2 size=10737418240 encryption=off 
+                    cluster_size=0
+    
+    ## создаем qcow2 файл размером 10Gb с пред выделенным место для метаданных
+    $ qemu-img create -f qcow2 -o preallocation=metadata img_m.qcow2 10G
+    Formatting 'img.qcow2', fmt=qcow2 size=10737418240 encryption=off 
+                    cluster_size=0 preallocation='metadata'
+    
+    $ ls -lhsS img*
+    1.8M -rw-r--r-- 1 koder koder  11G 2011-12-24 21:37 img_m.qcow2
+       0 -rw-r--r-- 1 koder koder  10G 2011-12-24 21:34 img.raw
+    136K -rw-r--r-- 1 koder koder 193K 2011-12-24 21:37 img.qcow2
+
+    Первая запись в ls это реальный размер файла на диске, а шестая - заявленный размер.
+В данном случае мы видим [sparse] файлы в действии. Все основные файловые системы
+в linux поддерживают выделение реального места на диске под файл 
+при записи реальных данных и такое поведение установлено по умолчанию.
+В отличии от raw файлов qcow2 файлы со старта содержат управляющие структуры, так что
+их размен не нулевой. Впрочем при копировании/архивации и др. raw файлов все-же
+придется обрабатывать полный размер, в отличии от qcow2.
+
+shell:
+    $ qemu-img info img.raw  # информация о файле 
+    image: img.raw
+    file format: raw
+    virtual size: 10G (10737418240 bytes)
+    disk size: 0
+    
+    $ qemu-img info img.qcow2
+    image: img.qcow2
+    file format: qcow2
+    virtual size: 10G (10737418240 bytes)
+    disk size: 136K
+    cluster_size: 65536
+
+    Сделаем "наслаивающиеся" qcow2 файлы. Размер для нового файла 
+указывать не нужно - так как он должен быть такого-же размера, 
+как и базовый образ: 
+
+shell:
+    $ qemu-img create -b img.qcow2 -f qcow2 -F qcow2 img_bs.qcow2
+    Formatting 'img_bs.qcow2', fmt=qcow2 size=10737418240 
+    backing_file='img.qcow2' backing_fmt='qcow2' encryption=off cluster_size=0  
+
+    $ qemu-img info img_bs.qcow2
+    image: img_bs.qcow2
+    file format: qcow2
+    virtual size: 10G (10737418240 bytes)
+    disk size: 136K
+    cluster_size: 65536
+    backing file: img.qcow2 (actual path: img.qcow2)
+
+    Базовый файл может быть любого формата, но создаваемый
+с backing store файл может быть только qcow2. qemu-img также
+Поддерживает все основные операции - изменение размера образа,
+смена базового файла, проверка целостности и создание/работа 
+со снимками.
+    
+    Остальные форматы интересны только при использовании 
+соответствующих систем виртуализации и рассматривать их в контексте
+qemu/kvm/xen смысле не имеет. qemu-img позволяет конвертировать
+файлы между всеми форматами, описанными сверху. Единственное
+исключение - разбитые на несколько файлов диски vmWare. Для работы
+сначала их нужно объединить в один файл с помошью [vdiskmanager],
+который входит в поставку vmWare Workstation for linux. Таким образом
+можно с kvm/xen использовать широко доступные в интернете виртуальные
+машины для vmWare.
+
+    Подключение этих файлов к виртуальным машинам [libvirt-disk],
+подключение CD делается примерно так-же, как и raw файлов.
+
+Где хранить
+===========
+
+    Для локального хранения есть два основных варианта - файл или 
+диск/раздел/[LVM] устройством ( всем линуксоидам, кто еще не освоил LVM 
+- очень советую это [сделать], это мощная система управления дисковым 
+пространством; так-же полезное чтиво - [devmapper], на нем и работают
+в linux LVM2, всякие software RAID & Co). Создание образа на разделе/LVM 
+принципиально не отличается от файла на FS, нужно только указывать
+qemu-img format не raw а host_device:
+
+shell:
+    # qemu-img create -f host_device /dev/vm_images/img1 10G
+
+/dev/vm_images/img1 - это логический раздел img1 в группе разделов
+vm_images (LVM). После этого можно передать его в libvirt: 
+
+xml:
+    <disk type='block' device='disk'>
+      <driver name='qemu' type='raw' />
+      <source dev='/dev/vm_images/img1' />
+      <target dev='vda' bus='virtio' />
+    </disk>
+ 
+    Обратите внимание на ''<target dev="vda" bus="virtio" />''
+вместо него можно использовать ''<target dev="hda" bus="ide" />'',
+но [virtio] дает значительный прирост производительности. Virtio
+это система частичной паравиртуализации для kvm. Она позволяет
+установить в гостевой системе набор драйверов, которые будут 
+обслуживать виртуальные устройства, передавая в гипервизор 
+высокоуровневые запросы и избавляя гостевую систему от превращения
+их (запросов) в общение с портами и DMA, а гипервизор от имитации 
+низкоуровневых протоколов. Особенно хорошо virtio ускоряет сеть
+и дисковые операции. В своем роде это аналог [vmware tools].
+Все современные ядра linux поддерживают virtio без дополнительных
+телодвижений, но, например, ядро из debian lenny - нет. Так что
+образ debian lenny просто не загрузится с virtio устройства 
+(есть virtio драйвера и для windows). 
+
+    Это были локальные способы, кроме них есть еще вагон и маленькая
+тележка сетевых хранилищ (причем они могут быть использованы и как 
+набор блочных устройств в режиме "по одному на VM", так и в режиме 
+удаленного диска с файловой системой). Очевидными преимуществами 
+сетевых хранилищ являются централизованное управление дисками для всего
+облака и облегчение миграции. Для небольших облаков они не так интересны,
+так что пробежимся по некоторым из ниx вскользь.
+
+    [AOE] - (ATA Over Ethernet) реализация ATA протокола поверх ethernet.
+Фактически ATA команды напрямую передаются удаленному винчестеру. 
+Из преимуществ - скорость. Дисковый массив и все рабочие станции 
+должны быть в одном сегменте локальной сети (нет маршрутизации).
+Основной производитель устройств - [Coraid]. Впрочем набор утилит
+открыт и можно достаточно просто самостоятельно сделать AOE сервер
+[примеров]  [в] [сети] [предостаточно]. 
+
+    [iSCSI] - SCSI поверх IP. Многие системы удаленного хранения
+работают именно на этом проколе. Маршрутизируемый (дисковый массив 
+и рабочие станции могут располагаться в сети где угодно). 
+Возможностей больше, чем у AOE, скорость - ниже. 
+
+    [nbd] - Network Block Device. Протокол для раздачи блочных устройств 
+по сети, подробнее обсуждается ниже на примере qemu-nbd.
+
+    [rbd] - Rados block device. Часть проекта [ceph] - распределенного
+сетевого хранилища и файловой системы (из интересного - есть прямая 
+привязка к qemu/kvm).
+
+    [drbd] - Distributed Replicated Block Device. Название 
+говорит само за себя.
+
+    Из действительно интересного - [sheepdog]. Это фактически первое(AFAIK) 
+"правильное" распределенное сетевое хранилище (только для kvm/qemu). Построено
+в соответствии с идеями [amazon dynamo] (статья обязательно к прочтению
+всем, кто так или иначе сталкивается с распределенными 
+системами хранения данных. Именно на этих идеях построены все основные
+NoSQL базы данных, ориентированные на сверхбольшие объемы данных, - 
+Cassandra, REAK, Voldemort). К сожалению проект похож на заброшенный. 
+
+    Больше информации по этим хранилищам можно получить еще и в блоге
+[Daniel P. Berrange].
+
+    Я пока сознательно обхожу стороной производительность дисковых операций
+на разных форматах, поскольку это довольно большая тема для отдельного поста.
+Для локальных хранилищ с высоты птичьего полета результат примерно такой - 
+qcow2 почти такой же по 
+скорости, как raw. Двухслойные qcow2 (и qcow2 поверх raw) примерно в два 
+раза медленнее, если не используется SSD диск. 
+А размещение образа на lvm разделе вместо файла
+увеличивает скорость работы только на больших блоках (файловые системы хорошо 
+оптимизированы под такие нагрузки, по крайней мере XFS).
+
+Как модифицировать
+==================
+
+    Есть масса причин модифицировать диски виртуальных машин до запуска - 
+изменение настроек для соответствия виртуальному окружению, передача параметров
+в vm, установка драйверов, etc. Нас в первую очередь будет интересовать изменение
+сетевых настроек и передача параметров в vm. 
+
+    Первый и самый основанной способ модифицировать файл с образом - каким-то образом
+примонтировать его в локальную файловую систему и дальше работать с локальными файлами.
+Для этого сначала нужно подключить его к виртуальному блочному устройству - loop.
+
+shell:
+    ## подключим к виртуальному устройству
+    # losetup -f --show img.raw
+    /dev/loop0
+
+    ## посмотрим подключенные файлы
+    # losetup -a
+    /dev/loop0: [0807]:2754650 (/home/koder/vm_images/img.raw)
+
+    ## сейчас img.raw подключен к виртуальному блочному устройству /dev/loop0
+    ## примонтирует его
+
+    # mkdir -p /mnt/vm/img_0
+    # mount /dev/loop0 /mnt/vm/img_0
+
+    После этих команд файловая система из img.raw подключена в /mnt/vm/img_0
+т.е. ее корень совпадает с /mnt/vm/img_0, /etc - /mnt/vm/img_0/etc и т.д.
+По окончанию обработки отключаем файл
+
+shell:
+    # umount /dev/loop0
+    # losetup -d /dev/loop0
+
+    Все внесенные изменения будут сохранены в файл образа. Если на образе
+несколько разделов, то все чуть сложнее - либо сначала с помощью fdisk
+смотрим таблицу разделов, определяем смещение необходимого раздела и передаем
+его в опции -o в losetup либо используем [kpartx]:
+
+shell:
+    # kpartx -a img2.raw
+    # mount /dev/mapper/loop0p1 /mnt/vm/img_0
+
+    kpartx делает дополнительные виртуальные устройства /dev/mapper/loop0pX
+для всех разделов на образе (на самом деле он использует devmapper для /dev/loop0).
+
+    Однако так можно подключить только raw образы, для всех остальных нужно использовать
+qemu-nbd. Это сервер, которые умеет раздавать блочное устройство по [nbd] протоколу.
+(Вообще nbd довольно интересный прокол - позволяет раздать по сети любое локальное блочное
+устройство, или, что еще интереснее, иммитировать его из пользовательской программы 
+,а не из драйвера. Вот, например ndb сервера [1], [2] на python.)
+    
+shell:
+    # modprobe nbd max_part=16 # <- очень важно передать max_part, если nbd
+    ## модуль был загруженных без него, его нужно выгрузить rmmod и загрузить снова
+    # qemu-nbd -b 127.0.0.1 -p 5555 img.qcow2
+    # nbd-client 127.0.0.1 5555 /dev/nbd0 # <- подключить к /dev/nb0
+
+    Если привязывать сервер не к localhost, то можно подключить это устройство на другом компьютере
+удаленно. Можно объединить оба шага в один:
+
+shell:
+    # qemu-nbd --connect=/dev/nbd0 img.qcow2
+
+    По итогу /dev/nbd0 будет представлять образ виртуальной машины,
+а /dev/nbd0pX - отдельные разделы. Дальнейшая работа не отличается от raw файла - монтирует
+полученные устройства в локальную файловую систему и елозим байты, вся поддержка формата qcow2 
+будет выполняться qemu-nbd сервером. 
+
+    Совершенно другой способ модификации дисковых образов предлагает библиотека [libguestfs].
+Это одна интересных библиотек, которые я видел. Она позволяет модифицировать образы
+виртуальных машин и многое другое. При это не требуются права root, поддерживаются все 
+файловые системы, поддерживаемые в linux, LVM и все-все-все. Внутри она запускает простенькую
+виртуальную машину, монтирует в нее указанный файл образа и позволяет модифицировать его
+используя обширный [API], который в итоге общается с VM по RPC. В принципе libguestfs позволяет
+и [смонтировать] файловую систему локально, использую fuse. Вообще возможности libguestfs очень
+обширны - [p2v] и [v2v] конвертация, модификация реестра windows, определение установленной 
+операционной системы и ПО, автоматическое монтирование всего в соответствии с локальными fstab и др.
+Еще из интересного в нее входит [guestfish] - утилита командной строки, позволяющая выполнять
+все операции из командной строки, в комплекте с virsh они позволяют писать маленькие 
+системы управления VM прямо на bash. Есть API для C, Python, Perl, Ruby, Ocaml и прочего.
+Меня, ессно, интересует в первую очередь python.
+
+Для приведения образа vm к удобному для запуска виду нам нужно примерно такая функция:
+
+python:
+
+    def prepare_guest_debian(disk_path, hostname, passwords, eth_devs, format=None, apt_proxy_ip=None):
+
+        # создаем и запускаем vm 
+        gfs = guestfs.GuestFS()
+        gfs.add_drive_opts(disk_path, format=format)
+        gfs.launch()
+
+        # находим раздел с /etc. Не очень чистое решение, но для образов, когда все 
+        # на одном разделе работает 
+        for dev, fs_type in  gfs.list_filesystems():
+            if fs_type in 'ext2 ext3 reiserfs3 reiserfs4 xfs jfs btrfs':
+                # монтирует раздел в корень файловой системы vm
+                gfs.mount(dev, '/')
+                # если есть etc - все ок
+                if gfs.exists('/etc'):
+                    break
+                gfs.umount(dev)
+
+        # обновляем hostname, для правильной работы hostname нужно так-же модифицировать
+        # /etc/hosts
+        gfs.write('/etc/hostname', hostname)
+
+        # set eth device names for udev
+        templ = 'SUBSYSTEM=="net", DRIVERS=="?*", ATTR{{address}}=="{hw}", NAME="{name}"'
+
+        # записываем настройки сетевых интерфейсов в /etc/network/interfaces
+
+        rules_fc = []
+        interfaces = ["auto lo\niface lo inet loopback"]
+        for dev, (hw, ip, sz, gw) in eth_devs.items():
+            rules_fc.append(templ.format(hw=hw, name=dev))
+            interfaces.append("auto " + dev)
+
+            if ip == 'dhcp':
+                interfaces.append("iface {0} inet dhcp".format(dev))
+            else:
+                interfaces.append("iface {0} inet static".format(dev))
+                interfaces.append("    address " + ip)
+                network = int2ip(ip2int(ip) & ip2int(netsz2netmask(sz)))
+                interfaces.append("    network " + network)
+                interfaces.append("    netmask " + netsz2netmask(sz))
+
+        gfs.write('/etc/udev/rules.d/70-persistent-net.rules', "\n".join(rules_fc))
+        gfs.write('/etc/network/interfaces', "\n".join(interfaces))
+
+        # обновляем пароли для пользователей
+
+        chars = "".join(chr(i) for i in range(ord('a'), ord('z') + 1))
+        chars += "".join(chr(i) for i in range(ord('A'), ord('Z') + 1))
+        chars += "".join(chr(i) for i in range(ord('0'), ord('9') + 1))
+
+        hashes = {}
+        for login, passwd in passwords.items():
+            salt = "".join(random.choice(chars) for _ in range(8))
+            hashes[login] = crypt.crypt(passwd, "$6$" + salt)
+
+        new_shadow = []
+        need_logins = set(hashes)
+
+        for ln in gfs.read_file('/etc/shadow').split('\n'):
+            ln = ln.strip()
+            if ln != '' and ln[0] != '#':
+                login = ln.split(':', 1)[0]
+                if login in hashes:
+                    new_shadow.append("{login}:{hash}:{rest}".format(login=login,
+                                                                       hash=hashes[login],
+                                                                       rest=ln.split(':', 2)[2]))
+                    need_logins.remove(login)
+            else:
+                new_shadow.append(ln)
+
+        for login in need_logins:
+            new_shadow.append("{login}:{hash}:{rest}".format(login=login,
+                                                             hash=hashes[login],
+                                                             rest="0:0:99999:7:::"))
+
+        gfs.write('/etc/shadow', "\n".join(new_shadow))
+
+        # тут еще модификация /etc/passwd, /etc/hosts, создание домащних папок, etc
+        # полная версия на github
+
+    Тут использован прямой интерфейс libguestfs. Наверное, для указанных задач проще 
+смонтировать образ через guestmount и модифицировать локальные файлы, иногда делая chroot
+(это, например, позволит использовать локальный passwd для обновления пароля). OpenStack
+делает это именно [так].
+
+Итоги
+===== 
+
+    После добавки кода, управляющего образами дисков, рефакторинга и перенесения конфигов в yaml файл
+[tiny_cloud] практически готов к использованию.
+Можно добавить интеграцию с fabric, мониторинг, кеш пакетов и многое другое, но и так уже вполне 
+годно к использованию. Разве что python API сделать удобное.
+
+linklist:
+    raw http://ru.wikipedia.org/wiki/RAW_%28%D1%84%D0%BE%D1%80%D0%BC%D0%B0%D1%82_%D0%B4%D0%B0%D0%BD%D0%BD%D1%8B%D1%85%29
+    sparse http://administratosphere.wordpress.com/2008/05/23/sparse-files-what-why-and-how/
+    LVM http://en.wikipedia.org/wiki/Logical_Volume_Manager_%28Linux%29
+    qcow2 http://en.wikipedia.org/wiki/Qcow#qcow2
+    vdi http://en.wikipedia.org/wiki/VDI_%28file_format%29#Virtual_Disk_Image
+    vmdk http://en.wikipedia.org/wiki/VMDK
+    VMware http://www.vmware.com/
+    VirtualBox https://www.virtualbox.org/
+    vdiskmanager http://www.vmware.com/support/ws45/doc/disks_vdiskmanager_eg_ws.html
+    qcow2-internals http://people.gnome.org/~markmc/qcow-image-format.html
+    libvirt-disk http://libvirt.org/formatdomain.html#elementsDisks
+    qemu-img http://linux.die.net/man/1/qemu-img
+    nbd http://nbd.sourceforge.net/
+    kpartx http://linux.die.net/man/8/kpartx
+    1 http://code.activestate.com/recipes/577569-nbd-server-in-python/
+    2 http://lists.canonical.org/pipermail/kragen-hacks/2004-May/000397.html
+    libguestfs http://libguestfs.org/
+    p2v http://libguestfs.org/virt-v2v/
+    v2v http://libguestfs.org/virt-v2v/
+    API http://libguestfs.org/guestfs.3.html
+    guestfish http://libguestfs.org/guestfish.1.html
+    смонтировать http://libguestfs.org/guestmount.1.html
+    tiny_cloud https://github.com/koder-ua/tiny_cloud
+    сделать http://habrahabr.ru/blogs/linux/67283/
+    devmapper http://sources.redhat.com/dm/
+    virtio http://wiki.libvirt.org/page/Virtio
+    vmware tools http://kb.vmware.com/selfservice/microsites/search.do?language=en_US&cmd=displayKC&externalId=340
+    так https://github.com/openstack/nova/tree/master/nova/virt/disk
+    примеров http://habrahabr.ru/blogs/linux/64350/
+    предостаточно http://www.linuxfordevices.com/c/a/News/ATAoverEthernet-enables-lowcost-Linuxoriented-SAN/
+    сети http://www.linux-mag.com/id/2028/
+    в http://www.howtoforge.com/how-to-build-a-low-cost-san
+    AOE http://en.wikipedia.org/wiki/ATA_over_Ethernet
+    Coraid http://www.coraid.com/
+    iSCSI http://en.wikipedia.org/wiki/ISCSI
+    rbd http://ceph.newdream.net/wiki/Rbd
+    ceph http://ceph.newdream.net/
+    drbd http://www.drbd.org/home/what-is-drb
+    sheepdog http://www.osrg.net/sheepdog/
+    Daniel P. Berrange http://berrange.com/
+    amazon dynamo http://www.allthingsdistributed.com/files/amazon-dynamo-sosp2007.pdf
