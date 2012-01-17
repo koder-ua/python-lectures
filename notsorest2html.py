@@ -266,18 +266,19 @@ class BlogspotHTMLProvider(NotSoRESTHandler):
         
         ntext = escape_html(text)
         
-        ntext = re_bold1.sub(r"<b>\1</b>", ntext)
-        ntext = re_it1.sub(r"<i>\1</i>", ntext)
-        ntext = re_striked1.sub(r"<s>\1</s>", ntext)
-        
-        ntext = re_bold2.sub(r"<b>\1</b>", ntext)
-        ntext = re_it2.sub(r"<i>\1</i>", ntext)
-        ntext = re_striked2.sub(r"<s>\1</s>", ntext)
-
         ntext = re_bold.sub(r"<b>\1</b>", ntext)
         ntext = re_it.sub(r"<i>\1</i>", ntext)
         ntext = re_striked.sub(r"<s>\1</s>", ntext)
         ntext = re_inline_code.sub(r"<b>\1</b>", ntext)
+
+        if self.opts.old_inline_support:
+            ntext = re_bold1.sub(r"<b>\1</b>", ntext)
+            ntext = re_it1.sub(r"<i>\1</i>", ntext)
+            ntext = re_striked1.sub(r"<s>\1</s>", ntext)
+            
+            ntext = re_bold2.sub(r"<b>\1</b>", ntext)
+            ntext = re_it2.sub(r"<i>\1</i>", ntext)
+            ntext = re_striked2.sub(r"<s>\1</s>", ntext)
 
         ntext = re_backref.sub(self.process_backref, ntext)
         ntext = re_href.sub(self.process_href, ntext)
@@ -589,6 +590,7 @@ def main(argv=None):
     parser.add_option("-o", "--output-file", dest='output_file', default=None)
     parser.add_option("-f", "--format", dest='format', default='blogspot')
     parser.add_option("-n", "--nolint", dest='nolint', default=False, action='store_true')
+    parser.add_option("-l", "--old-inline-support", dest='old_inline_support', default=False, action='store_true')
     parser.add_option("-a", "--standalone", dest='standalone', default=False,
                         action='store_true')
     
