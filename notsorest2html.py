@@ -18,7 +18,8 @@ from pygments.lexers import PythonLexer, \
                             PythonTracebackLexer, \
                             PythonConsoleLexer, \
                             BashSessionLexer,\
-                            HaskellLexer
+                            HaskellLexer, \
+                            BashLexer
 
 from pygments.formatters import HtmlFormatter
 
@@ -336,6 +337,8 @@ class BlogspotHTMLProvider(NotSoRESTHandler):
     highlighters_map['pyconsole'] = PythonConsoleLexer
     highlighters_map['shell'] = BashSessionLexer
     highlighters_map['haskell'] = HaskellLexer
+    highlighters_map['bash'] = BashLexer
+
     def __getattr__(self, name):
         # handle all syntax hightlited blocks
         if name.startswith('on_'):

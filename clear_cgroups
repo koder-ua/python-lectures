@@ -1,0 +1,16 @@
+#!/bin/bash
+cgroup_mount=/sys/fs/cgroup
+
+for cgroup in `lscgroup | awk -F: '{print $1}' | uniq` ; do
+	for group in `ls -1d $cgroup_mount/$cgroup/app_cell_* 2>/dev/null` ; do
+		#group=$cgroup_mount/$cgroup/$_group
+		if [ -d $group ] ; then
+			TC=`cat $group/tasks | wc -l`
+			if (( $TC==0 )) ; then
+				gname=$cgroup:/`basename $group`
+				echo "Group $gname is empty - clear it"
+				cgdelete -r $gname
+			fi
+		fi
+	done
+done

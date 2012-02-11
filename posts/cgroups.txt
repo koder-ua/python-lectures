@@ -1,0 +1,273 @@
+Запуск процессов в linux с ограниченнием ресурсов
+=================================================
+
+	Иногда хочется ограничить максимальное количество ресурсов
+доступных процессу. Последней пинком стали юнит-тесты из текущего
+проекта - из-за ошибок они несколько раз съели все 8Gb ОЗУ и 
+отправили систему в глубокий своп, откуда она со скрипом 
+доставалась минут 15. 
+Полная виртуализация таких случаях избыточна - нужно 
+что-то по легче. В linux для этого есть [cgroups] (control groups) -
+они позволяют поместить процесс (вместе со всеми его потомками)
+в контейнер, имеющий доступ только к части ресурсов системы.
+На самом деле cgroups умеют больше, чем просто ограничение 
+ресурсов - тут и счетчики производительности и другая статистика.
+	
+	cgroups можно манипулировать вручную или с помощью
+[libcgroup]. Последний способ значительно удобнее и по нему есть
+отличная [redhat_cgroups_docs|документация] от redhat. Она
+обязательна к прочтению - есть несколько 
+не очевидных моментов (для пользователей ubuntu - в этом дистрибутиве
+по умолчанию cgroups монтируются в /sys/fs/cgroups).
+
+<------------------------------------------------------------------------>
+
+	Краткий пересказ документации на примере ubuntu/libcgroup.
+
+	сgroups основываются на контроллерах и иерархии групп. Процессы 
+входят в группы, группы организовываются в деревья, где 
+подгруппы получают часть ресурсов родительских групп,
+а контроллеры управляют ресурсами. Контроллер может быть привязан
+или только к одной иерархии или к нескольким если он в 
+каждой единственный контроллер, а каждый процесс может быть привязан
+только к одной группе в каждой иерархии, но может быть привязан
+к другим группам в других иерархиях. Деревья групп отображаются
+на файловую систему и все работа с ними идет через специальные файлы.
+
+	Основные контроллеры позволяют управлять привязкой процессов
+к ядрам, ограничивать максимальную долю процессорного 
+времени, объем используемой памяти и свопа и использование пропускной
+способности сети, блочных устройств и другое.
+
+shell:
+	# apt-get install cgroup-bin
+	 
+	После установки в системе появится сервис cgconfig, который 
+автоматически создает иерархию групп и контроллеров по описанию
+из файла /etc/cgconfig.cfg. После правки файла сервис необходимо 
+перезапустить. Иногда он не может корректно 
+перезапуститься из-за не отмонтированных при останове
+контроллеров. Лечится это ручным отмонтированием 
+контроллеров:
+
+shell:
+	$ sudo service cgconfig restart
+	[sudo] password for koder: 
+	stop: Job failed while stopping
+	$ lscgroups
+	cpuset:/
+    cpuset:/sysdefault
+    $ rm -rf /sys/fs/cgroup/cpuset/sysdefault
+    $ umount /sys/fs/cgroup/cpuset
+    $ umount /sys/fs/cgroup
+    # # теперь можно перезапускать
+
+    Второй интересный сервис - cgred. Он умеет автоматически 
+распределять процессы по группам в зависимости от правил, описанных
+в /etc/cgrules.conf. По умолчанию не запущен.
+
+	После установки cgroup-bin в /sys/fs/cgroup появится группы 
+из стартового конфига:
+
+shell:
+	$ ls /sys/fs/cgroup
+	cpu  cpuacct  devices  freezer  memory
+
+	К каждой иерархии привязан один контроллер с соответствующим именем.
+Что-бы поместаить процесс под управление одного из контроллеров нужно 
+выполнить 3 шага:
+
+* Сделать группу. sudo mkdir /sys/fs/cgroup/memory/test создаст группу
+  test под управлением контроллера memory. В папке /sys/fs/cgroup/memory/test
+  тут же появятся специальные файлы для управления и мониторинга группы.
+
+* Настроить контроллер. Некоторые контроллеры готовы к работе сразу,
+  а некотрые требуют предварительной настройки. Правила настройки контроллеров не 
+  очень очевидны и описаны в документации. Для memory минимально необходимо
+  записать ограничение в файл limit_in_bytes.
+
+shell:
+	$ sudo echo 4M > /sys/fs/cgroup/memory/test/limit_in_bytes
+
+Теперь процессы в группе могут использовать не больше 4M ОЗУ на всех.
+
+* Перенести процесс в группу - для этого нужно записать его pid в
+  файл /sys/fs/cgroup/memory/test/tasks.
+
+	Когда группа станет не нужно ее можно удалить через ''rm -rf''.
+Что-бы создать подгруппу нужно сделать новую папку в папке группы.
+
+	cgroups-bin предлагает чуть более удобный интерфейс для управления
+группами:
+
+shell:
+	# cgcreate -g memory:/test # создать группу tt под управлением контроллера memory
+	
+	# lscgroup memory:/
+	memory:///
+	memory:///test
+	memory:///sysdefault
+	
+
+	# cgset -r memory.limit_in_bytes=4M  memory:test # устанавливаем limit
+	# cgexec -g memory:test python -c "range(10000000000)"  # пытаемся сделать всем плохо
+	Killed
+ 
+	# cgdelete memory:test # удалить группу
+
+	# lscgroup memory:/
+	memory:///
+	memory:///sysdefault
+
+	Чтобы не делать это каждый раз руками можно настроить
+cgred или написать автоматизирующий скрипт; я сделал себе такой:
+
+hide.bash:
+	#!/bin/bash
+	#set -x
+	USAGE="Usage: `basename $0` [-h] [-m MEM_LIMIT_IN_MEGS] [-c CPUS] [-i IOLIMIT] [-u USER] CMD"
+
+	cgroup_mount=/sys/fs/cgroup
+
+	GROUP=app_cell_1
+	while [ true ] ; do
+		
+		OK=1
+		for cgroup in `lscgroup | awk -F: '{print $1}' | uniq`; do
+			if [ -d $cgroup_mount/$cgroup/$GROUP ] ; then
+				OK=0
+				break
+			fi
+		done
+
+		if (( $OK==1 )) ; then
+			break
+		fi
+
+		GROUP=app_cell_$RANDOM
+	done
+
+	MEMLIMIT=
+	CPUS=
+	USER=
+	IOLIMIT=
+
+	while getopts hm:c:i:u: OPT; do
+		case "$OPT" in 
+			h) 
+				echo $USAGE
+				exit 0
+				;;
+			c)
+				CPUS=$OPTARG
+				echo "CPUS = $CPUS"
+				;;
+			i)
+				IOLIMIT=$OPTARG
+				;;
+			m)
+				MEMLIMIT=$OPTARG
+				;;
+			u)
+				USER=$OPTARG
+				;;
+			\?)
+				echo $USAGE >&2
+				exit 1
+				;;
+		esac
+	done		
+
+	shift $(($OPTIND - 1))
+
+	if [ $# -eq 0 ]; then
+	    echo $USAGE >&2
+	    exit 1
+	fi
+
+	CMD=$@
+
+	#cgdelete memory:/$GROUP 2>/dev/null
+	#cgdelete cpuset:/$GROUP 2>/dev/null
+	#cgdelete blkio:/$GROUP 2>/dev/null
+
+	CGEXEC_OPT=
+	LIMITS=0
+
+	if [ -n "$MEMLIMIT" ] ; then
+		LIMITS=1
+		cgcreate -g memory:/$GROUP
+		cgset -r memory.limit_in_bytes=$MEMLIMIT $GROUP
+		cgset -r memory.memsw.limit_in_bytes=$MEMLIMIT $GROUP
+		CGEXEC_OPT="$CGEXEC_OPT -g memory:$GROUP"
+	fi
+
+	if [ -n "$CPUS" ] ; then
+		LIMITS=1
+		cgcreate -g cpuset:/$GROUP
+		cgset -r cpuset.cpus=$CPUS $GROUP
+		cgset -r cpuset.mems=0 $GROUP
+		CGEXEC_OPT="$CGEXEC_OPT -g cpuset:$GROUP"
+	fi
+
+	if [ -n "$IOLIMIT" ] ; then
+		echo "IO limits not supported yet" >&2
+	fi
+
+	if (( $LIMITS==0 )) ; then
+		echo "At least one limit should be set" >&2
+		echo $USAGE >&2
+		exit 1
+	fi
+
+	if [ -e "$USER" ] ; then
+		cgexec $CGEXEC_OPT $CMD
+	else
+		cgexec $CGEXEC_OPT su "$USER" -c "$CMD"
+	fi
+
+Используется так:
+
+shell:
+	$ sudo ./incontainer -u koder -m 1G -c 0-1 nosetests
+	# #nosetests ограничен 1 гигабайтом ОЗУ и только двумя ядрами.
+
+	Скрипт каждый раз создает новую группу вида app_cell_случайное_число,
+которые нужно периодически удалять, когда в них не останется ни одного процесса.
+Например, так:
+
+hide.bash:
+	#!/bin/bash
+	cgroup_mount=/sys/fs/cgroup
+
+	for cgroup in `lscgroup | awk -F: '{print $1}' | uniq` ; do
+		for group in `ls -1d $cgroup_mount/$cgroup/app_cell_* 2>/dev/null` ; do
+			#group=$cgroup_mount/$cgroup/$_group
+			if [ -d $group ] ; then
+				TC=`cat $group/tasks | wc -l`
+				if (( $TC==0 )) ; then
+					gname=$cgroup:/`basename $group`
+					echo "Group $gname is empty - clear it"
+					cgdelete -r $gname
+				fi
+			fi
+		done
+	done
+
+
+P.S. Ковыряясь в cgroup наткнулся на очень интересный системный [prctl|вызов]
+
+c:
+	prctl(PR_SET_SECCOMP, 0, 0, 0, 0)
+
+	После него текущий процесс не может делать никакие системные вызовы,
+кроме записи/чтения в уже открытые файлы, _exit и sigreturn. Появился в 2.6.33,
+вместе с cgroups отличная идея для интерпретации/валидации потенциально 
+опасных данных, например для реализации интерпретаторов, получающих скрипты из 
+не доверенных источников.
+
+linklist:
+	cgroups http://www.mjmwired.net/kernel/Documentation/cgroups.txt
+	libcgroup http://libcg.sourceforge.net/
+	redhat_cgroups_docs http://docs.redhat.com/docs/en-US/Red_Hat_Enterprise_Linux/6/html/Resource_Management_Guide/
+	prctl http://www.kernel.org/doc/man-pages/online/pages/man2/prctl.2.html

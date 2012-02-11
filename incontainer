@@ -1,0 +1,104 @@
+#!/bin/bash
+#set -x
+USAGE="Usage: `basename $0` [-h] [-m MEM_LIMIT_IN_MEGS] [-c CPUS] [-i IOLIMIT] [-u USER] CMD"
+
+cgroup_mount=/sys/fs/cgroup
+
+GROUP=app_cell_1
+while [ true ] ; do
+	
+	OK=1
+	for cgroup in `lscgroup | awk -F: '{print $1}' | uniq`; do
+		if [ -d $cgroup_mount/$cgroup/$GROUP ] ; then
+			OK=0
+			break
+		fi
+	done
+
+	if (( $OK==1 )) ; then
+		break
+	fi
+
+	GROUP=app_cell_$RANDOM
+done
+
+MEMLIMIT=
+CPUS=
+USER=
+IOLIMIT=
+
+while getopts hm:c:i:u: OPT; do
+	case "$OPT" in 
+		h) 
+			echo $USAGE
+			exit 0
+			;;
+		c)
+			CPUS=$OPTARG
+			echo "CPUS = $CPUS"
+			;;
+		i)
+			IOLIMIT=$OPTARG
+			;;
+		m)
+			MEMLIMIT=$OPTARG
+			;;
+		u)
+			USER=$OPTARG
+			;;
+		\?)
+			echo $USAGE >&2
+			exit 1
+			;;
+	esac
+done		
+
+shift $(($OPTIND - 1))
+
+if [ $# -eq 0 ]; then
+    echo $USAGE >&2
+    exit 1
+fi
+
+CMD=$@
+
+#cgdelete memory:/$GROUP 2>/dev/null
+#cgdelete cpuset:/$GROUP 2>/dev/null
+#cgdelete blkio:/$GROUP 2>/dev/null
+
+CGEXEC_OPT=
+LIMITS=0
+
+if [ -n "$MEMLIMIT" ] ; then
+	LIMITS=1
+	cgcreate -g memory:/$GROUP
+	cgset -r memory.limit_in_bytes=$MEMLIMIT $GROUP
+	cgset -r memory.memsw.limit_in_bytes=$MEMLIMIT $GROUP
+	CGEXEC_OPT="$CGEXEC_OPT -g memory:$GROUP"
+fi
+
+if [ -n "$CPUS" ] ; then
+	LIMITS=1
+	cgcreate -g cpuset:/$GROUP
+	cgset -r cpuset.cpus=$CPUS $GROUP
+	cgset -r cpuset.mems=0 $GROUP
+	CGEXEC_OPT="$CGEXEC_OPT -g cpuset:$GROUP"
+fi
+
+if [ -n "$IOLIMIT" ] ; then
+	echo "IO limits not supported yet" >&2
+fi
+
+if (( $LIMITS==0 )) ; then
+	echo "At least one limit should be set" >&2
+	echo $USAGE >&2
+	exit 1
+fi
+
+if [ -e "$USER" ] ; then
+	cgexec $CGEXEC_OPT $CMD
+else
+	cgexec $CGEXEC_OPT su "$USER" -c "$CMD"
+fi
+
+
