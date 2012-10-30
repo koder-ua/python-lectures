@@ -1,0 +1,127 @@
+Зачем в python with
+===================
+
+    Долгое время при работе с файлами из python я писал
+примерно следующий код:
+
+python:
+    def some_func(fname):
+        fd = open(fname)
+        some_data_processing(fd.read())
+        return result
+
+    Тут предполагается, что в любом случае при выходе из функции
+переменная fd уничтожится и вместе с ней закроется файл и все будут жить
+долго и счастливо.
+
+    Но что будет если в some_data_processing произойдет исключение?
+
+<-------------------------------------------------------------------------->
+
+Например так:
+
+python:
+    import sys
+
+    class TestClass(object):
+        def __del__(self):
+            print "I'm deleted"
+
+    def data_process():
+        obj = TestClass()
+        raise IndexError()
+
+    try:
+        data_process()
+    except:
+        print "In exception handler"
+
+    print "after except"
+
+На консоли появляется:
+
+raw:
+    In exception handler
+    after except
+    I'm deleted
+
+    Почему-то "In exception handler" и "after except" выводятся раньше 
+"I'm deleted".
+
+    Первая проблема в том, что вместе с исключением питон хранит и трейс стека, 
+содержащий все фреймы вплоть до породившего исключение. 
+А внутри фрейма живет f_locals - словарь локальных переменных, и именно
+он имеет ссылку на экземпляр класса TestClass. Таким образом до окончания 
+обработки исключения obj будет жить точно. Почему же "after except" появляется 
+раньше чем "I'm deleted"? Было бы логично чистить трейс после успешного выхода из блока try.
+Дело в том что 2.X питон не всегда чистит внутренние структуры 
+после обработки исключения и в общем случае вы должны явно вызывать функцию [sys.exc_clear]
+чтобы очистить их. Когда я подошел с этим вопросом к Larry Hastings (одному из
+основных разработчиков ядра питона) ему потребовалось около 20ти минут, что-бы понять что 
+происходит и найти в документации sys.exc_clear.
+(Правда стоит отметить, что он давно использует 3.X, где это поведение стало адекватнее.)
+В 3.X это поведение улучшили, и теперь sys.exc_clear автоматически вызывается окончанию
+обработки исключения.
+
+    Кстати, если вы напишете примерно такой код:
+
+python:
+    try:
+        data_process()
+    except:
+        fr = sys.exc_info()[2]
+        del fr
+
+то не забудьте удалить fr используя del, как в последней строке - иначе он образует 
+циклическую ссылку с текущим фреймом и тогда все станет совсем плохо.
+
+    Стоит отметить, что подобное поведение проявляется не всегда. Например
+следующий код исполняется более предсказуемо:
+
+python:
+    import sys
+
+    class TestClass(object):
+        def __del__(self):
+            print "I'm deleted"
+
+    def data_process():
+        fd = TestClass()
+        try:
+            raise IndexError()
+        except:
+            print "In internal exception handler"
+
+    data_process()
+    print "after except"
+
+
+raw:
+    In internal exception handler
+    I'm deleted
+    after except
+
+
+    В общем что-бы гарантированно избавить себя от этих проблем нужно явно 
+закрывать все файлы и прочие объекты или так:
+
+python:
+    fd = open(fname)
+    try:
+        process_code()
+    finally:
+        fd.close()
+
+или так:
+
+python:
+    with open(fname) as fd:
+        process_code()
+
+собственное with именно для этого и был сделан. Без его использования вы рискуете 
+исчерпать лимит на дескрипторы или что-там-еще в 
+зависимости от объектов. Впрочем это только начало печальной истории, продолжение дальше.
+
+linklist:
+    sys.exc_clear http://docs.python.org/2/library/sys.html#sys.exc_clear
+    nuitka http://nuitka.net/

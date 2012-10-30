@@ -1,0 +1,301 @@
+
+О сборке мусора и деструкторах
+==============================
+
+    В [этом] посте я писал почему работа с файлами и другими объектами,
+требующими гарантированного закрытия должна должна производиться через with. 
+Однако кроме минуса в виде добавления в код лишнего
+уровеня вложенности with еще и решает только часть проблемы -
+если код обработки файла не локален (нужно возвращать дескриптор
+в вызывающий код или хранить неопределенное время) with не может помочь.
+И собственно никто вообще не может помочь - суровая реальность состоит в том, что
+python не гарантирует вызов деструктора объекта. Т.е. если вы работаете на CPython,
+и не создаете циклических ссылок, то за крайне редкими исключениями деструктор 
+будет вызываться вовремя. Но если вы используете ironpython/jython/pypy
+то ситуация становится совсем печальна.
+
+<------------------------------------------------------------------>
+
+    Для тех кто, вдруг, не в курсе - немного про деструкторы в С++, как пример 
+удобных для программиста деструкторов. С++ гарантирует
+вызов деструктора у объекта по его уничтожению что бы не произошло 
+(за исключением полного краха программы/пропадания питания/конца света/etc).
+Уничтожение наступает либо по выходу из блока в котором определена
+переменная, либо по удалению объекта с помощью оператора 
+delete при выделении объекта в куче.
+
+raw:
+    // C++
+    {
+        // open file
+        std::fstream fs(fname, std::ios_base::out);
+        process_file(fs);
+    } // file is closed before we get beyong this line, no matter what happened
+
+    Гарантированный вызов деструктора - великое программистское благо, позволяющее 
+не заботится о освобождении некоторых ресурсов, не загромождать код всякими
+with/using/try-finally & Co, и даже для объектов в куче есть всякие 
+unique_ptr. Но все это хорошо работает только в том случае, если
+объект имел некую локальную область жизни(впрочем unique_ptr/shared_ptr могут и больше). 
+Если же объект выделяется из кучи в одном
+месте, а освобождается в другом то можно забыть сделать ему
+delete - получаем утечку памяти. Не смотря на множество способов
+значительно сократить вероятность такого исхода (например [арены]) полностью исключить
+его нельзя. 
+
+    В качестве решения этой проблемы в современных языках используются сборщики мусора.
+Периодически они проходятся по памяти, и тем или иным способом удаляют неиспользуемые объекты.
+Все бы хорошо, но у сборщиков
+мусора возникают небольшие или большие проблемы с вызовами деструкторов у объектов. 
+Во-первых все сборщики мусора бессильны перед циклическими ссылками. Если объект a ссылается на b, 
+а b ссылается на a,
+то не понятно в каком порядке вызывать деструкторы. Сначала у a или сначала у b. Если сначала у
+a, то при вызове деструктора b его ссылка на a будет не валидна и наоборот. Отсутствие информации
+о смысле взаимосвязей между объектами не дает сборщику мусора вызвать деструкторы в 
+корректном порядке. Копирующие сборщики мусора пошли еще дальше. Они вообще ничего не вызывают,
+оставляя программиста один на один с этой проблемой и гордо подписываясь 
+"современный сборщик мусора".
+
+    Проблема, очевидно, состоит в том что оперативная память это не единственный ресурс
+требующий освобождения. Еще, как минимум, есть объекты OS, мютексы, транзакции БД,
+и много, много другого. Часть из таких объектов будет через время прикрыта другим кодом
+(например транзакции БД - но в любом случае они будут создавать лишнюю нагрузку на 
+базу все это время), но объекты OS останутся с процессом до его смерти. А ведь бОльшая часть
+таких объектов имею локальную область видимости и деструктор был бы
+идеальным местом для их освобождения. Таким образом переходя
+от С++ к языкам со сборкой мусора, но с недетерменированным вызовом деструкторов мы выигрываем в коде 
+освобождения памяти, но проигрываем на других объектах.
+Теперь вместо delete "где-то там" вы должны написать dispose/using/with/try-finally 
+прямо тут на каждый объект. Впрочем если файл, например, является не локальным, 
+то и это не поможет. Для примера можно открыть Экслера и глянуть как в яве правильно
+работать с файлами. Страница ужасного кода ради одного маленького файлика. Не уверен, что такая 
+сборка мусора того стоила.
+
+    Итак посмотрим как себя ведут с деструкторами разные варианты питона.
+В качестве примера возьмем вот такую программу:
+
+python:
+    import gc
+    import sys
+
+    class DestTest(object):
+        def __init__(self, val):
+            self.val = val
+
+        def __del__(self):
+            sys.stdout.write(str(self) + '.__del__()\n')
+
+        def __str__(self):
+            return "DestTest({})".format(self.val)
+
+        def __repr__(self):
+            return "DestTest({})".format(self.val)
+
+    def simple_var():
+        d = DestTest("simple var")
+
+    def mdeleted_var():
+        d = DestTest("manyally deleted var")
+        del d
+
+    def simple_list():
+        a = [DestTest("simple list")]
+
+    def internal_exc():
+        try:
+            d = DestTest("exception_func")
+            raise IndexError()
+        except:
+            pass
+
+    def exception_func():
+        d = DestTest("exception_func")
+        raise IndexError()
+
+    def self_ref_list():
+        a = [DestTest("self-ref list")]
+        a.append(a)
+
+    def cycle_refs():
+        d1 = DestTest("cycle_ref_obj1")
+        d2 = DestTest("cycle_ref_obj2")
+        d3 = DestTest("free_obj")
+
+        d1.ref = d2
+        d2.ref = d1
+        d2.ref2 = d3
+
+    simple_var()
+    sys.stdout.write("after simple var\n")
+    sys.stdout.write("\n")
+
+    simple_list()
+    sys.stdout.write("after simple list\n")
+    sys.stdout.write("\n")
+
+    mdeleted_var()
+    sys.stdout.write("after manually deleted var\n")
+    sys.stdout.write("\n")
+
+    self_ref_list()
+    sys.stdout.write("after self ref list\n")
+    gc.collect()
+    sys.stdout.write("after gc.collect()\n")
+    sys.stdout.write("\n")
+
+    internal_exc()
+    sys.stdout.write("after internal exc\n")
+
+    try:
+        exception_func()
+    except Exception as x:
+        pass
+    sys.stdout.write("after exception func\n")
+    gc.collect()
+    sys.stdout.write("after gc.collect()\n")
+    try:
+        sys.exc_clear()
+    except AttributeError:
+        pass
+    else:
+        sys.stdout.write("after sys.exc_clear()\n")
+    sys.stdout.write("\n")
+
+    cycle_refs()
+    sys.stdout.write("after cycle refs\n")
+    gc.collect()
+    sys.stdout.write("after gc.collect()\n")
+    sys.stdout.write("\n")
+
+    d = DestTest("module var")
+
+
+    В идеальном мире вызов деструктора у объектов класса
+DestTest во всех этих функциях должен происходить до выхода из соответствующей функции.
+Итак что получается:
+
+python2.7
+
+raw:
+    DestTest(simple var).__del__()
+    after simple var
+
+    DestTest(simple list).__del__()
+    after simple list
+
+    DestTest(manyally deleted var).__del__()
+    after manually deleted var
+
+    after self ref list
+    DestTest(self-ref list).__del__()
+    after gc.collect()
+
+    after exception func
+    after gc.collect()
+    DestTest(exception_func).__del__()
+    after sys.exc_clear()
+
+    after cycle refs
+    after gc.collect()
+
+    Exception AttributeError: "'NoneType' object has no attribute 'stdout'" in 
+    <bound method DestTest.__del__ of DestTest(module var)> ignored    
+
+    Более-менее. Деструктор у циклических ссылок не был вызван, как и ожидалось.
+Для уничтожения объектов, связанных с исключением, дошедшем до уровня модуля 
+приходится вызывать sys.clear_exc(), в остальных случаях с исключениями все ок.
+Интересно, что питон освободил sys.stdout раньше, чем переменную d, в итоге чего ее деструктор
+отработал не корректно (впрочем это поведение не всегда повторяется).
+
+python3.3
+
+raw:
+    DestTest(simple var).__del__()
+    after simple var
+
+    DestTest(simple list).__del__()
+    after simple list
+
+    DestTest(manyally deleted var).__del__()
+    after manually deleted var
+
+    after self ref list
+    DestTest(self-ref list).__del__()
+    after gc.collect()
+
+    DestTest(exception_func).__del__()
+    after exception func
+    after gc.collect()
+
+    after cycle refs
+    after gc.collect()
+
+    Exception AttributeError: "'NoneType' object has no attribute 'stdout'" in 
+    <bound method DestTest.__del__ of DestTest(module var)> ignore
+
+Почти то-же самое, что и 2.7, только sys.exc_clear() больше не нужно.
+
+ironpython2.7
+
+raw:
+    after simple var
+
+    after simple list
+
+    after manually deleted var
+
+    after self ref list
+    DestTest(self-ref list).__del__()
+    DestTest(manyally deleted var).__del__()
+    DestTest(simple list).__del__()
+    DestTest(simple var).__del__()
+    after gc.collect()
+
+    after exception func
+    DestTest(exception_func).__del__()
+    after gc.collect()
+    after sys.exc_clear()
+
+    after cycle refs
+    DestTest(free_obj).__del__()
+    DestTest(cycle_ref_obj2).__del__()
+    DestTest(cycle_ref_obj1).__del__()
+    after gc.collect()
+
+    DestTest(module var).__del__()
+
+Удаляет все, но только при сборке мусора, до тех пор все объекты живут где-то в памяти.
+
+    И - встречаем победителя. Сама лаконичность или 
+мир всем вашим деструкторам от нашей Java и копирующего сборщика мусора:
+jython2.7a2 - Java HotSpot(TM) Client VM (Oracle Corporation) on java1.7.0_07
+
+raw:
+    after simple var
+
+    after simple list
+
+    after manually deleted var
+
+    after self ref list
+    after gc.collect()
+
+    after exception func
+    after gc.collect()
+    after sys.exc_clear()
+
+    after cycle refs
+    after gc.collect()
+
+Правда в ява есть и другие варианты сборщика мусора, может там чуть по-лучше.
+
+    А вывод все тот-же. По возможности - используйте with. По невозможности -
+попробуйте поправить код, так что-бы можно было использовать with. Иначе - 
+аккуратно вызывайте деструкторы руками 
+
+P.S. Как я люблю, когда мне предлагают делать какую-то рутинную работу в коде 
+"аккуратно".
+
+linklist:
+    этом http://koder-ua.blogspot.com/2012/10/python-with.html
+    арены http://en.wikipedia.org/wiki/Region-based_memory_management
