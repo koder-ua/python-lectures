@@ -226,7 +226,7 @@ class ADVTimeit(object):
         #self.find_timeit_overhead()
 
     def find_timeit_overhead(self):
-        if self.__class__.timeit_overhead is None:
+        if self.timeit_overhead is None:
             number = 1000 * 1000 * 1000
             self.__class__.timeit_overhead = timeit.timeit('pass', '',
                                                             number=number, 
