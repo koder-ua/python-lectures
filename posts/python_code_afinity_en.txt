@@ -1,8 +1,6 @@
-============================================================================================
-Python, processor affinity или как существенно ускорить некоторые программы, ничего не делая
-============================================================================================
-
-~Всем, кто увидел первую версию поста - цифры были кривые из-за turbo boost~
+=========================================
+Processor affinity and python performance
+=========================================
 
     Возьмем простой пример tcp клиента и сервера на python.
 Сервер создает пул из N потоков и ждет соединений с клиентом. Получив
@@ -10,8 +8,16 @@ Python, processor affinity или как существенно ускорить
 клиента строку данных и имитирует некую обработку. При получении 'bye\n' сервер
 завершает обработку клиента.
 
+    We would start from example of simple python tcp server and client.
+Server creates thread pool and waits for client to connect. When connection
+is archiver server passes it to pool for processing. Process function reads
+one line from socket and simulate some cpu load. After receiving 'bye\n' server
+closes connection.
+
     Клиент открывает N соединений с сервером и генерирует на них нагрузку.
 Общий объем нагрузки за один запуск клиента фиксирован.
+
+    Client creates N connections and generate some load fixed-size load.
 
 <----------------------------------------------------------------------------->
 
@@ -73,6 +79,8 @@ python:
 
 Замеряем сколько времени нужно для одного прогона этой системы с N=4
 
+Timings for 4 threads:
+
 shell:
     $ python mt_test.py client 4 & time python mt_test.py server 4
 
@@ -82,6 +90,9 @@ shell:
 
     А теперь почти то же самое, но разрешим операционной системе исполнять все
 потоки сервера только на одном ядре из 8ми доступных
+
+    Same timings, but now OS allowed to run all python threads on only 1 core
+(from 8 available):
 
 shell:
     $ python mt_test.py client 4 & time taskset 0x00000001 python mt_test.py server 4
@@ -93,9 +104,16 @@ shell:
     Уличная магия в действии - многопоточная программа исполнилась в 2 раза
 быстрее, когда мы разрешили использовать только одно ядро процессора.
 
+    Results don't really looks obvious - 4 thread program gets faster, when
+executed on only 1 core, enstead of 8.
+
     Почему такое получилось? Во-первых [GIL] - сколько бы потоков в питоне мы не
 создали, они всегда будут исполняться питоновский код только по очереди. Питон
 не позволяет двум потокам одного процесса одновременно исполнять свой байтокод.
+
+    There two main reasons, which leads to such result - first of all we have
+the GIL. Don't matter how many python threads are ready to run - only one of
+them would be allowed to execute python code at any particular moment.
 
     Таким образом для этой программы(как и для 99% программ на питоне) никакого
 заметного ускорения от использования более одного ядра ожидать и не приходится.
@@ -103,11 +121,22 @@ shell:
 ~конкурентной~ такой системе от изменения количества ядер в процессоре не
 холодно и не жарко (почти).
 
+    As result we sould not expect any performance improvement just by running
+this code on multycode computer. All pure-python programs are [concurrent, but
+not parallel]. And performance mostly not depend on how many codes you have.
+
     Почему же скорость исполнения падает, если использовать более одного ядра?
 Причин две:
 
+    This explains why performance don't degradate. Why it improves? There two
+main reasons:
+
 * Излишние переключения между потоками
 * Постоянная война за кеш с другими потоками в системе и друг с другом
+
+* Extra thread context switch
+* Continuous fight for the CPU cache with other threads
+
 
     Итак что происходит: пусть у нас есть два потока, один из которых(первый)
 сейчас обрабатывает принятые данные, а второй ожидает данных от сокета.
@@ -117,6 +146,14 @@ shell:
 и первым делом пытается захватить GIL. Неудача - GIL захвачен первым потоком.
 Второй поток снова засыпает, ожидая освобождения GIL.
 
+    Lets take a close look what happend on two threads example. First thread
+processes data at the moment and second wait for data from socket. At last
+second thread socket gets some data and ready to continus execution. OS take
+a look on available CPU cores and found, that first core is busy processing
+first thread. So it schedules second thread to second core. Second threads
+starts and first of all try to acquire GIL and fails - GIL holds by first
+thread. So it sleeps again, now waiting for GIL to be released.
+
     В итоге операционная система, которая понятия не имеет ни о каких GIL, сделала
 кучу лишней работы (переключение контекста достаточно дорогая операция). Правда
 заметная часть этой работы делалась вторым ядром, так что происходила параллельно
@@ -124,6 +161,11 @@ shell:
 равно занимало шину памяти. Ситуация становится хуже, если в системе есть [HT] -
 в этом случае второе ядро может делить с первым исполняемые блоки процессора и
 все эти лишние переключения будут серьезно замедлять исполнение первого потока.
+
+    As result OS, which has no clue about GIL semantics, doing a lot of extra
+works. Part of this work is done by second CPU core and should not really
+slowes down first thread. But in any case it creates extra load on memory bus
+anf cache. In case if processor has [HT] situation may be worse.
 
     Вторая проблема состоит в том, что второй поток переброшен на исполнение
 на второе ядро процессора. Когда первый поток освободит GIL, то второй поток
@@ -134,9 +176,20 @@ shell:
 При этом в промежутках пока питоновские потоки ждут GIL на эти ядра вклиниваются
 другие потоки из системы, постоянно вытесняя наши данные из кеша.
 
+    But the real problem is that second thread is now scheduled for execution
+on second core. When GIL would be released OS would not migrate this thread
+on first core, because it knews about caches and try to not move thread to ither
+code without real reason. As result all python threads, which in sum can
+produces 100% load on single core, are creates 12.5% load on each of 8
+available cores.
+
     В итоге питоновские потоки постоянно "бегают" по ядрам. Данные копируются
 в кеш и из кеша, а каждый кеш-промах стоит до тысяч тактов на обращение к RAM.
 Даже по меркам питона - серьезные нагрузки.
+
+    Python threads are continuesly jumps around all cores. Data are moved in
+and out if L1/L2 caches and LLC/RAM. While each cache miss consts up to
+thousands CPU cycles for memore access.
 
     Выставив привязку к одному ядру мы убиваем сразу двух зайцев. Во-первых
 сокращаем количество переключений контекста, поскольку ОС будет заметно реже
@@ -145,17 +198,39 @@ shell:
 тем самым мы уменьшим интенсивность обмена данными между кешем и ОЗУ
 (питоновские потоки в одном процессе используют заметную часть данных совместно).
 
+    By restricting OS to shedule all server python threads on single code
+we eliminates a most of context switches. Also in this case other threads would
+(mostly) not being scheduled to this core, which also would decreate cache
+misses friquency.
+
 Итоги тестирования.
 
-* SUM - общее затраченное время
-* SYS - время, затраченное операционной системой
-* USR - время, затраченное в пользовательском режиме
-* XXX_AF - XXX в случае, если выставлена привязка к одному ядру
-* DIFF - отличие в процентах между XXX и XXX_AF
+Test results:
 
-Все измерения сделаны на Core i7-2630QM@800MHz, python 2.7.5, x64, ubuntu 13.10 с
+* SUM - общее затраченное время
+* SUM - execution time, as shown by 'real' field of ouput of 'time' utility
+
+* SYS - время, затраченное операционной системой
+* SYS - OS time, as shown by 'system' field
+
+
+* USR - время, затраченное в пользовательском режиме
+* SYS - user time, as shown by 'user' field
+
+* XXX_AF - XXX в случае, если выставлена привязка к одному ядру
+* XXX_AF - XXX in case of CPU affinity turned on
+
+* DIFF - отличие в процентах между XXX и XXX_AF
+* DIFF - % difference of XXX and XXX_AF (positive means - with affinity faster)
+
+    Все измерения сделаны на Core i7-2630QM@800MHz, python 2.7.5, x64, ubuntu
+13.10 с
 усреднением по 7ми выборкам. Долгая война с turbo boost окончилась принудительным
 переводом процессора в режим минимальных частот.
+
+All measures taken on Core i7-2630QM@800MHz, python 2.7.5, x64, ubuntu 13.10.
+7 runs mean, to eliminates turbo boost influence CPU runs on lowes available
+code clock - 800Mhz.
 
 raw:
     -------------------------------------------------------------------------
@@ -177,26 +252,50 @@ raw:
 используется turbo boost, что тоже ускорит вашу программу, если больше никто не грузит систему.
 Для этого теста turbo boost был заблокирован.
 
+
+    Run under VTune showns, that in case of affinity is turned on amount of
+cache misses are decreased on factor of 5 and amount of context switches on
+factor of 40. In case if turbo boost would not be disabled it can also speed up
+program, which uses only one core by increasing this particular core clock.
+
+
     Будет ли что-то подобное в других случаях? Хотя данная программа и обрабатывает данные,
 приходящие из сокета, но данные приходят быстрее, чем она может их обработать. Таким образом
 она является [CPU bounded]. Если программа будет в основном занята ожиданием данных, то
 выставления привязки к ядру даст меньше ускорения - ОС будет меньше перебрасывать потоки между
 ядрами. Чем выше нагрузка на процессор, тем больше будет выигрыш.
 
+    In what cases we can expects such speed up? Shown example is actually a CPU
+bounded program, because data coming much facter, than it can be processed.
+In case of IO bounded program speed up would be smaller.
+
 Когда мы можем получить замедление:
+In next cases we would expect, that affinity would slows down program:
 
 * если в программе есть места, которые действительно параллельны, например
 часть работы делается С/С++ библиотекой, которая отпускает GIL
+* If some calculations made in C/C++ library, which release GIL during
+execution
+
 * Или вы используете jython или ironpython
+* If you use jython or ironpython
+
 * Если вы используете multiprocessing/ProcessPoolExecutor, которые запускают
 отдельные  процессы и не имеют проблем с GIL. Привязка в линуксе наследуется
 потоками/процессами. Так что для дочерних процессов ее нужно или отменить, или
 выделить по своему ядру на каждый процесс.
+
+* If you uses multiprocessing/ProcessPoolExecutor, which uses processes instead
+of threads and allows python to side-step GIL. As affinity are inherited by
+child processes we should either set dedicated CPU core or decline affinity
+for child processes.
+
 * В некоторых однопоточных системах, например при использовании gevent
+* In some single-thread programs, like ones, which uses gevent.
 
 P.S. В 3.3 поведение все то-же.
+P.S. Python 3.3 shows the same behaviour.
 
-P.S.S. Нашел уже готовую [статью] про тоже самое.
 
 linklist:
     GIL http://habrahabr.ru/post/84629

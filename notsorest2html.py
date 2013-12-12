@@ -564,9 +564,9 @@ def not_so_rest_to_xxx(text, styles, formatter):
         #debug_block(block)
 
         if block.tp in styles:
-             block.tp, block.style = styles[block.tp]
+            block.tp, block.style = styles[block.tp]
         else:
-             style = None
+            style = None
 
         formatter.process(block)
 
